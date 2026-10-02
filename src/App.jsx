@@ -1,171 +1,172 @@
-import React, { useState, useEffect } from 'react';
-import { Mic, MicOff, Plus, Check, Clock, Trash2, ShoppingBag, DollarSign, ChefHat } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Mic, MicOff, Plus, Check, Clock, Trash2, ShoppingBag, ChefHat } from 'lucide-react';
+
+const PEDIDOS_INICIALES = [
+  { id: 1, cliente: 'María López', items: '2 Brownies de Chocolate, 1 Pie de Limón', total: 850, estado: 'pendiente', hora: '12:30 PM' },
+  { id: 2, cliente: 'Carlos Gomez', items: '1 Torta Red Velvet Grande', total: 1200, estado: 'listo', hora: '01:15 PM' },
+];
+
+const cargarPedidos = () => {
+  try {
+    const guardado = localStorage.getItem('chefnote_pedidos');
+    return guardado ? JSON.parse(guardado) : PEDIDOS_INICIALES;
+  } catch {
+    return PEDIDOS_INICIALES;
+  }
+};
+
+const formatoMonto = (n) => `$${Number(n || 0).toLocaleString('es-DO')}`;
+
+// Extrae monto y cliente del texto dictado
+const analizarDictado = (texto) => {
+  // Monto: número pegado a "pesos" o "$" (acepta 1,200 o 1.200)
+  const matchMonto =
+    texto.match(/(\d[\d.,]*)\s*(?:pesos|peso|\$)/i) || texto.match(/\$\s*(\d[\d.,]*)/);
+  const monto = matchMonto ? matchMonto[1].replace(/[.,](?=\d{3}\b)/g, '').replace(',', '.') : '';
+
+  // Cliente: "para Juan", "para María López"
+  const matchCliente = texto.match(/\bpara\s+([^,.\d]+?)(?=\s+(?:con|de|y|por)\b|[,.\d]|$)/i);
+  const cliente = matchCliente ? matchCliente[1].trim() : '';
+
+  return { monto, cliente };
+};
+
+const campo =
+  'w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-3 text-base text-white placeholder:text-slate-500 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-500/40';
 
 export default function App() {
-  const [pedidos, setPedidos] = useState(() => {
-    const saved = localStorage.getItem('chefnote_pedidos');
-    return saved ? JSON.parse(saved) : [
-      { id: 1, cliente: "María López", items: "2 Brownies de Chocolate, 1 Pie de Limón", total: 850, estado: "pendiente", hora: "12:30 PM" },
-      { id: 2, cliente: "Carlos Gomez", items: "1 Torta Red Velvet Grande", total: 1200, estado: "listo", hora: "01:15 PM" }
-    ];
-  });
-
+  const [pedidos, setPedidos] = useState(cargarPedidos);
   const [escuchando, setEscuchando] = useState(false);
   const [transcripcion, setTranscripcion] = useState('');
   const [nuevoCliente, setNuevoCliente] = useState('');
   const [nuevosItems, setNuevosItems] = useState('');
   const [nuevoTotal, setNuevoTotal] = useState('');
+  const reconocimientoRef = useRef(null);
 
   useEffect(() => {
-    localStorage.setItem('chefnote_pedidos', JSON.stringify(pedidos));
+    try {
+      localStorage.setItem('chefnote_pedidos', JSON.stringify(pedidos));
+    } catch {
+      /* almacenamiento lleno o bloqueado: la app sigue funcionando */
+    }
   }, [pedidos]);
 
-  // Manejo de reconocimiento de voz
+  // Detener el micrófono si el componente se desmonta
+  useEffect(() => () => reconocimientoRef.current?.stop(), []);
+
   const alternarMicrofono = () => {
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-      alert('Tu navegador no soporta el dictado por voz. Puedes ingresar el pedido manualmente abajo.');
+    // Si ya está escuchando, detiene la misma instancia
+    if (escuchando) {
+      reconocimientoRef.current?.stop();
       return;
     }
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
+    if (!SpeechRecognition) {
+      alert('Tu navegador no soporta el dictado por voz. Puedes ingresar el pedido manualmente abajo.');
+      return;
+    }
 
-    recognition.lang = 'es-ES';
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'es-DO';
     recognition.continuous = false;
     recognition.interimResults = false;
 
-    if (!escuchando) {
-      setEscuchando(true);
-      recognition.start();
-
-      recognition.onresult = (event) => {
-        const texto = event.results[0][0].transcript;
-        setTranscripcion(texto);
-        parsearDictado(texto);
-        setEscuchando(false);
-      };
-
-      recognition.onerror = () => {
-        setEscuchando(false);
-      };
-
-      recognition.onend = () => {
-        setEscuchando(false);
-      };
-    } else {
+    recognition.onresult = (event) => {
+      const texto = event.results[0][0].transcript;
+      const { monto, cliente } = analizarDictado(texto);
+      setTranscripcion(texto);
+      setNuevosItems(texto);
+      if (monto) setNuevoTotal(monto);
+      setNuevoCliente(cliente || 'Cliente Dictado');
+    };
+    recognition.onerror = () => setEscuchando(false);
+    recognition.onend = () => {
       setEscuchando(false);
-      recognition.stop();
+      reconocimientoRef.current = null;
+    };
+
+    reconocimientoRef.current = recognition;
+    setEscuchando(true);
+    try {
+      recognition.start();
+    } catch {
+      setEscuchando(false);
     }
-  };
-
-  // Parser simple para extraer datos del dictado
-  const parsearDictado = (texto) => {
-    // Busca números al final o cerca de "pesos" / "monto"
-    const regexMonto = /(\d+)\s*(pesos|pesos\s*domicanos|\$)?/i;
-    const matchMonto = texto.match(regexMonto);
-
-    if (matchMonto) {
-      setNuevoTotal(matchMonto[1]);
-    }
-
-    // Asigna el texto completo a la lista de items para edición rápida
-    setNuevosItems(texto);
-    setNuevoCliente('Cliente Dictado');
   };
 
   const agregarPedido = (e) => {
     e.preventDefault();
-    if (!nuevosItems) return;
+    if (!nuevosItems.trim()) return;
 
     const nuevo = {
       id: Date.now(),
-      cliente: nuevoCliente || 'Cliente General',
-      items: nuevosItems,
+      cliente: nuevoCliente.trim() || 'Cliente General',
+      items: nuevosItems.trim(),
       total: Number(nuevoTotal) || 0,
       estado: 'pendiente',
-      hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    setPedidos([nuevo, ...pedidos]);
+    setPedidos((prev) => [nuevo, ...prev]);
     setNuevoCliente('');
     setNuevosItems('');
     setNuevoTotal('');
     setTranscripcion('');
   };
 
-  const cambiarEstado = (id) => {
-    setPedidos(pedidos.map(p => {
-      if (p.id === id) {
-        return { ...p, estado: p.estado === 'pendiente' ? 'listo' : 'pendiente' };
-      }
-      return p;
-    }));
-  };
+  const cambiarEstado = (id) =>
+    setPedidos((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, estado: p.estado === 'pendiente' ? 'listo' : 'pendiente' } : p))
+    );
 
-  const eliminarPedido = (id) => {
-    setPedidos(pedidos.filter(p => p.id !== id));
-  };
+  const eliminarPedido = (id) => setPedidos((prev) => prev.filter((p) => p.id !== id));
 
-  const totalVentas = pedidos
-    .filter(p => p.estado === 'listo')
-    .reduce((acc, p) => acc + p.total, 0);
+  const totalVentas = pedidos.filter((p) => p.estado === 'listo').reduce((acc, p) => acc + p.total, 0);
+  const pendientes = pedidos.filter((p) => p.estado === 'pendiente').length;
 
   return (
-    <div style={{ maxWidth: '600px', margin: '0 auto', padding: '16px' }}>
+    <div className="mx-auto max-w-xl p-4">
       {/* Encabezado */}
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', paddingBottom: '12px', borderBottom: '1px solid #334155' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <ChefHat size={32} color="#f97316" />
-          <h1 style={{ fontSize: '24px', fontWeight: 'bold', margin: 0, color: '#f8fafc' }}>ChefNote Express</h1>
+      <header className="mb-5 flex items-center justify-between border-b border-slate-700 pb-3">
+        <div className="flex items-center gap-2">
+          <ChefHat size={32} className="text-orange-500" />
+          <h1 className="text-2xl font-bold text-slate-50">ChefNote Express</h1>
         </div>
-        <div style={{ background: '#1e293b', padding: '8px 12px', borderRadius: '8px', border: '1px solid #334155' }}>
-          <span style={{ fontSize: '12px', color: '#94a3b8', display: 'block' }}>Ventas Hoy</span>
-          <span style={{ fontSize: '18px', fontWeight: 'bold', color: '#22c55e' }}>${totalVentas}</span>
+        <div className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2">
+          <span className="block text-xs text-slate-400">Ventas hoy</span>
+          <span className="text-lg font-bold text-green-500">{formatoMonto(totalVentas)}</span>
         </div>
       </header>
 
-      {/* Botón de Dictado Gigante para Cocina */}
-      <section style={{ marginBottom: '24px' }}>
+      {/* Botón de dictado */}
+      <section className="mb-6">
         <button
+          type="button"
           onClick={alternarMicrofono}
-          style={{
-            width: '100%',
-            padding: '24px',
-            borderRadius: '16px',
-            border: 'none',
-            background: escuchando ? '#dc2626' : '#ea580c',
-            color: 'white',
-            fontWeight: 'bold',
-            fontSize: '20px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '8px',
-            cursor: 'pointer',
-            boxShadow: '0 10px 15px -3px rgba(0,0,0,0.3)'
-          }}
+          aria-pressed={escuchando}
+          className={`flex w-full flex-col items-center justify-center gap-2 rounded-2xl p-6 text-xl font-bold text-white shadow-lg transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-300 ${
+            escuchando ? 'animate-pulse bg-red-600 hover:bg-red-700' : 'bg-orange-600 hover:bg-orange-500'
+          }`}
         >
           {escuchando ? <MicOff size={40} /> : <Mic size={40} />}
-          <span>{escuchando ? 'Escuchando pedido... (Toca para detener)' : '🎙️ TOCA PARA DICTAR PEDIDO'}</span>
+          <span>{escuchando ? 'Escuchando pedido... (toca para detener)' : 'Toca para dictar pedido'}</span>
         </button>
         {transcripcion && (
-          <p style={{ marginTop: '8px', fontSize: '14px', color: '#cbd5e1', fontStyle: 'italic', textAlign: 'center' }}>
-            "{transcripcion}"
-          </p>
+          <p className="mt-2 text-center text-sm italic text-slate-300">“{transcripcion}”</p>
         )}
       </section>
 
-      {/* Formulario Manual Express */}
-      <form onSubmit={agregarPedido} style={{ background: '#1e293b', padding: '16px', borderRadius: '12px', marginBottom: '24px', border: '1px solid #334155' }}>
-        <h2 style={{ fontSize: '16px', margin: '0 0 12px 0', color: '#e2e8f0' }}>Anotación Rápida</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      {/* Formulario manual */}
+      <form onSubmit={agregarPedido} className="mb-6 rounded-xl border border-slate-700 bg-slate-800 p-4">
+        <h2 className="mb-3 text-base font-semibold text-slate-200">Anotación rápida</h2>
+        <div className="flex flex-col gap-2.5">
           <input
             type="text"
             placeholder="Cliente (ej: Juan)"
             value={nuevoCliente}
             onChange={(e) => setNuevoCliente(e.target.value)}
-            style={{ padding: '12px', borderRadius: '8px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '16px' }}
+            className={campo}
           />
           <input
             type="text"
@@ -173,19 +174,21 @@ export default function App() {
             value={nuevosItems}
             onChange={(e) => setNuevosItems(e.target.value)}
             required
-            style={{ padding: '12px', borderRadius: '8px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '16px' }}
+            className={campo}
           />
-          <div style={{ display: 'flex', gap: '10px' }}>
+          <div className="flex gap-2.5">
             <input
               type="number"
+              inputMode="decimal"
+              min="0"
               placeholder="Monto ($)"
               value={nuevoTotal}
               onChange={(e) => setNuevoTotal(e.target.value)}
-              style={{ flex: 1, padding: '12px', borderRadius: '8px', border: '1px solid #475569', background: '#0f172a', color: 'white', fontSize: '16px' }}
+              className={`${campo} flex-1`}
             />
             <button
               type="submit"
-              style={{ padding: '12px 20px', borderRadius: '8px', border: 'none', background: '#22c55e', color: 'white', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+              className="flex items-center gap-1.5 rounded-lg bg-green-500 px-5 py-3 text-base font-bold text-white transition-colors hover:bg-green-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-300"
             >
               <Plus size={20} /> Guardar
             </button>
@@ -193,70 +196,64 @@ export default function App() {
         </div>
       </form>
 
-      {/* Lista de Pedidos en la Cocina */}
+      {/* Lista de pedidos */}
       <section>
-        <h2 style={{ fontSize: '18px', marginBottom: '12px', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <ShoppingBag size={20} /> Pedidos Activos ({pedidos.filter(p => p.estado === 'pendiente').length})
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold text-slate-50">
+          <ShoppingBag size={20} /> Pedidos activos ({pendientes})
         </h2>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          {pedidos.map((pedido) => (
-            <div
-              key={pedido.id}
-              style={{
-                background: pedido.estado === 'listo' ? '#0f172a' : '#1e293b',
-                padding: '16px',
-                borderRadius: '12px',
-                borderLeft: `6px solid ${pedido.estado === 'listo' ? '#22c55e' : '#f97316'}`,
-                opacity: pedido.estado === 'listo' ? 0.6 : 1,
-                display: 'flex',
-                justifySpace: 'space-between',
-                alignItems: 'center'
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                  <span style={{ fontWeight: 'bold', color: '#f8fafc', fontSize: '18px' }}>{pedido.cliente}</span>
-                  <span style={{ fontSize: '12px', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '3px' }}>
-                    <Clock size={12} /> {pedido.hora}
-                  </span>
-                </div>
-                <p style={{ margin: '4px 0', color: '#cbd5e1', fontSize: '16px' }}>{pedido.items}</p>
-                <span style={{ fontWeight: 'bold', color: '#f97316', fontSize: '16px' }}>${pedido.total}</span>
-              </div>
+        {pedidos.length === 0 && (
+          <p className="rounded-xl border border-dashed border-slate-700 p-6 text-center text-slate-400">
+            No hay pedidos. Dicta uno o anótalo arriba.
+          </p>
+        )}
 
-              <div style={{ display: 'flex', gap: '8px', marginLeft: '12px' }}>
-                <button
-                  onClick={() => cambiarEstado(pedido.id)}
-                  style={{
-                    padding: '12px',
-                    borderRadius: '8px',
-                    border: 'none',
-                    background: pedido.estado === 'listo' ? '#475569' : '#22c55e',
-                    color: 'white',
-                    cursor: 'pointer'
-                  }}
-                  title="Marcar como listo"
-                >
-                  <Check size={24} />
-                </button>
-                <button
-                  onClick={() => eliminarPedido(pedido.id)}
-                  style={{
-                    padding: '12px',
-                    borderRadius: '8px',
-                    border: 'none',
-                    background: '#ef4444',
-                    color: 'white',
-                    cursor: 'pointer'
-                  }}
-                  title="Eliminar"
-                >
-                  <Trash2 size={20} />
-                </button>
+        <div className="flex flex-col gap-3">
+          {pedidos.map((pedido) => {
+            const listo = pedido.estado === 'listo';
+            return (
+              <div
+                key={pedido.id}
+                className={`flex items-center justify-between rounded-xl border-l-[6px] p-4 ${
+                  listo ? 'border-green-500 bg-slate-900 opacity-60' : 'border-orange-500 bg-slate-800'
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="mb-1 flex flex-wrap items-center gap-2">
+                    <span className="text-lg font-bold text-slate-50">{pedido.cliente}</span>
+                    <span className="flex items-center gap-1 text-xs text-slate-400">
+                      <Clock size={12} /> {pedido.hora}
+                    </span>
+                  </div>
+                  <p className="my-1 break-words text-base text-slate-300">{pedido.items}</p>
+                  <span className="text-base font-bold text-orange-500">{formatoMonto(pedido.total)}</span>
+                </div>
+
+                <div className="ml-3 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => cambiarEstado(pedido.id)}
+                    title={listo ? 'Volver a pendiente' : 'Marcar como listo'}
+                    aria-label={listo ? 'Volver a pendiente' : 'Marcar como listo'}
+                    className={`rounded-lg p-3 text-white transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-300 ${
+                      listo ? 'bg-slate-600 hover:bg-slate-500' : 'bg-green-500 hover:bg-green-600'
+                    }`}
+                  >
+                    <Check size={24} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => eliminarPedido(pedido.id)}
+                    title="Eliminar pedido"
+                    aria-label="Eliminar pedido"
+                    className="rounded-lg bg-red-500 p-3 text-white transition-colors hover:bg-red-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-300"
+                  >
+                    <Trash2 size={24} />
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
     </div>
