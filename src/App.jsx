@@ -4,6 +4,9 @@ import {
   MessageCircle, History, ChevronLeft, ChevronRight, StickyNote,
 } from 'lucide-react';
 
+// Nombre del negocio para firmar los mensajes de WhatsApp (déjalo vacío para no incluirlo)
+const NEGOCIO = '';
+
 /* ---------- Utilidades ---------- */
 const pad = (n) => String(n).padStart(2, '0');
 const aISO = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -89,9 +92,32 @@ const numeroWhatsApp = (tel) => {
 };
 const enlaceWhatsApp = (p) => {
   const numero = numeroWhatsApp(p.telefono);
+  const listo = p.estado === 'listo';
+  const hora = new Date().getHours();
+  const saludo = hora < 12 ? 'Buen día' : hora < 20 ? 'Buenas tardes' : 'Buenas noches';
+  const cobrado = cobradoDe(p);
   const debe = debeDe(p);
-  const msg = `Hola ${p.cliente}, tu pedido (${p.items}) está listo.${debe ? ` Queda pendiente ${formatoMonto(debe)}.` : ''} ¡Gracias!`;
-  return `https://wa.me/${numero}?text=${encodeURIComponent(msg)}`;
+
+  const pago =
+    p.pago === 'pagado'
+      ? '*Estado del pago:* abonado en su totalidad'
+      : p.pago === 'abono'
+        ? `*Abonado:* ${formatoMonto(cobrado)}\n*Saldo pendiente:* ${formatoMonto(debe)}`
+        : `*Saldo a abonar:* ${formatoMonto(debe)}`;
+
+  const partes = [
+    `${saludo}, ${p.cliente}.`,
+    `Le escribimos${NEGOCIO ? ` de ${NEGOCIO}` : ''} ${listo ? 'para informarle que su pedido ya está listo.' : 'para confirmar su pedido.'}`,
+    `*Detalle del pedido*\n${lineas(p.items).map((l) => `• ${l}`).join('\n')}`,
+    `*Total:* ${formatoMonto(p.total)}\n${pago}`,
+    p.fecha ? `*Entrega:* ${etiquetaDia(p.fecha)}${p.hora ? ` · ${formatoHora(p.hora)}` : ''}` : null,
+    listo
+      ? 'Quedamos a su disposición para coordinar la entrega. Muchas gracias por su confianza.'
+      : 'Quedamos atentos a cualquier consulta. Muchas gracias por su confianza.',
+    `Saludos cordiales${NEGOCIO ? `,\n${NEGOCIO}` : '.'}`,
+  ].filter(Boolean);
+
+  return `https://wa.me/${numero}?text=${encodeURIComponent(partes.join('\n\n'))}`;
 };
 
 // Extrae monto y cliente del texto dictado
@@ -729,8 +755,8 @@ export default function App() {
                         href={enlaceWhatsApp(p)}
                         target="_blank"
                         rel="noopener noreferrer"
-                        title="Avisar por WhatsApp"
-                        aria-label="Avisar por WhatsApp"
+                        title="Enviar mensaje por WhatsApp"
+                        aria-label="Enviar mensaje por WhatsApp"
                         className={`${boton} ${btnSuave}`}
                       >
                         <MessageCircle size={18} />
