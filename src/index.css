@@ -1,9 +1,50 @@
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap');
 @import "tailwindcss";
 
+@theme {
+  --font-sans: 'Bricolage Grotesque', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --color-tinta: #0e1726;
+  --color-panel: #162136;
+  --color-borde: #25324a;
+  --color-harina: #f4efe6;
+  --color-niebla: #8c98ad;
+  --color-mantequilla: #f2c14e;
+  --color-pistacho: #86c9a5;
+  --color-frambuesa: #ef6a7d;
+}
+
+html { color-scheme: dark; }
+
 body {
-  background-color: #0f172a;
-  color: #f8fafc;
   margin: 0;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  background: var(--color-tinta);
+  color: var(--color-harina);
   -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--color-mantequilla); color: var(--color-tinta); }
+
+:focus-visible {
+  outline: 2px solid var(--color-mantequilla);
+  outline-offset: 2px;
+}
+
+* { scrollbar-width: thin; scrollbar-color: var(--color-borde) transparent; }
+
+@keyframes anillo {
+  from { transform: scale(1); opacity: 0.45; }
+  to { transform: scale(2); opacity: 0; }
+}
+@keyframes aparecer {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.anillo { animation: anillo 1.8s ease-out infinite; }
+.anillo-2 { animation-delay: 0.9s; }
+.aparecer { animation: aparecer 0.18s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  .anillo, .aparecer { animation: none; }
 }
