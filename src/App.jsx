@@ -16,6 +16,7 @@ const sumarDias = (n) => {
   d.setDate(d.getDate() + n);
   return aISO(d);
 };
+const horaValida = (h) => /^\d{2}:\d{2}$/.test(h || '');
 const leer = (clave) => {
   try {
     const guardado = localStorage.getItem(clave);
@@ -33,7 +34,7 @@ const guardar = (clave, valor) => {
 };
 
 const formatoNumero = new Intl.NumberFormat('es-AR', { useGrouping: 'always', maximumFractionDigits: 2 });
-const formatoMonto = (n) => `$${formatoNumero.format(Number(n || 0))}`;
+const formatoMonto = (n) => `AR$ ${formatoNumero.format(Number(n || 0))}`;
 const verMonto = (v) => (v ? formatoNumero.format(Number(v)) : '');
 const lineas = (texto) => texto.split(/\s*,\s*/).filter(Boolean);
 const limpiarMonto = (v) => v.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
@@ -175,8 +176,8 @@ function Calendario({ valor, onElegir }) {
 
 /* ---------- App ---------- */
 export default function App() {
-  const [pedidos, setPedidos] = useState(() => leer('chefnote_pedidos'));
-  const [historial, setHistorial] = useState(() => leer('chefnote_historial'));
+  const [pedidos, setPedidos] = useState(() => leer('chefnote_pedidos').map((p) => (horaValida(p.hora) ? p : { ...p, hora: '' })));
+  const [historial, setHistorial] = useState(() => leer('chefnote_historial').map((p) => (horaValida(p.hora) ? p : { ...p, hora: '' })));
   const [escuchando, setEscuchando] = useState(false);
   const [transcripcion, setTranscripcion] = useState('');
   const [form, setForm] = useState(vacio);
@@ -509,7 +510,7 @@ export default function App() {
                 onChange={(e) => poner('hora', e.target.value.replace(/[^\d:]/g, '').slice(0, 5))}
                 placeholder="3:30"
                 aria-label="Hora de entrega"
-                className={`${campo} w-28 tabular-nums`}
+                className={`${campo.replace('w-full', 'w-28 shrink-0')} tabular-nums`}
               />
               <div className="flex rounded-xl bg-tinta/60 p-1">
                 {['AM', 'PM'].map((m) => (
@@ -523,15 +524,15 @@ export default function App() {
                   </button>
                 ))}
               </div>
-              <span className="text-sm text-niebla">Hora opcional</span>
+              <span className="whitespace-nowrap text-sm text-niebla">Hora opcional</span>
             </div>
           </div>
 
           <div>
             <span className={etiquetaCampo}>Monto y pago</span>
             <div className="flex flex-wrap items-center gap-3">
-              <span className="relative block w-36">
-                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-niebla">$</span>
+              <span className="relative block w-44">
+                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-niebla">AR$</span>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -539,7 +540,7 @@ export default function App() {
                   onChange={(e) => poner('monto', limpiarMonto(e.target.value))}
                   placeholder="0"
                   aria-label="Monto total"
-                  className={`${campo} pl-8 tabular-nums`}
+                  className={`${campo} pl-14 tabular-nums`}
                 />
               </span>
               <div className="flex gap-2">
@@ -551,8 +552,8 @@ export default function App() {
               </div>
             </div>
             {form.pago === 'abono' && (
-              <span className="relative mt-3 block w-48">
-                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-niebla">$</span>
+              <span className="relative mt-3 block w-52">
+                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-niebla">AR$</span>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -560,7 +561,7 @@ export default function App() {
                   onChange={(e) => poner('abono', limpiarMonto(e.target.value))}
                   placeholder="Cuánto abonó"
                   aria-label="Monto del abono"
-                  className={`${campo} pl-8 tabular-nums`}
+                  className={`${campo} pl-14 tabular-nums`}
                 />
               </span>
             )}
