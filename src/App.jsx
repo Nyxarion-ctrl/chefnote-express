@@ -1,22 +1,80 @@
 import { useState, useEffect, useRef } from 'react';
-import { Mic, Check, Plus, Pencil, Trash2, X, Save, Undo2, Archive, ChefHat, Clock } from 'lucide-react';
+import {
+  Mic, Check, Plus, Pencil, Trash2, X, Save, Undo2, Archive, ChefHat, CalendarClock,
+  MessageCircle, History, ChevronLeft, ChevronRight, StickyNote,
+} from 'lucide-react';
 
-const PEDIDOS_INICIALES = [
-  { id: 1, cliente: 'María López', items: '2 Brownies de Chocolate, 1 Pie de Limón', total: 850, estado: 'pendiente', hora: '12:30 PM' },
-  { id: 2, cliente: 'Carlos Gomez', items: '1 Torta Red Velvet Grande', total: 1200, estado: 'listo', hora: '01:15 PM' },
-];
-
-const cargarPedidos = () => {
+/* ---------- Utilidades ---------- */
+const pad = (n) => String(n).padStart(2, '0');
+const aISO = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const deISO = (s) => {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+const sumarDias = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return aISO(d);
+};
+const leer = (clave) => {
   try {
-    const guardado = localStorage.getItem('chefnote_pedidos');
-    return guardado ? JSON.parse(guardado) : PEDIDOS_INICIALES;
+    const guardado = localStorage.getItem(clave);
+    return guardado ? JSON.parse(guardado) : [];
   } catch {
-    return PEDIDOS_INICIALES;
+    return [];
+  }
+};
+const guardar = (clave, valor) => {
+  try {
+    localStorage.setItem(clave, JSON.stringify(valor));
+  } catch {
+    /* almacenamiento lleno o bloqueado: la app sigue funcionando */
   }
 };
 
 const formatoMonto = (n) => `$${Number(n || 0).toLocaleString('es-DO')}`;
 const lineas = (texto) => texto.split(/\s*,\s*/).filter(Boolean);
+const limpiarMonto = (v) => v.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1');
+
+const etiquetaDia = (iso) => {
+  if (iso === sumarDias(0)) return 'Hoy';
+  if (iso === sumarDias(1)) return 'Mañana';
+  return deISO(iso).toLocaleDateString('es-DO', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '');
+};
+const aHora24 = (txt, ampm) => {
+  const m = txt.trim().match(/^(\d{1,2})(?::?(\d{2}))?$/);
+  if (!m) return '';
+  let h = Number(m[1]);
+  const min = Number(m[2] || 0);
+  if (h < 1 || h > 12 || min > 59) return '';
+  if (ampm === 'AM' && h === 12) h = 0;
+  else if (ampm === 'PM' && h < 12) h += 12;
+  return `${pad(h)}:${pad(min)}`;
+};
+const deHora24 = (h24) => {
+  if (!h24) return { txt: '', ampm: 'PM' };
+  const [h, m] = h24.split(':').map(Number);
+  return { txt: `${h % 12 || 12}:${pad(m)}`, ampm: h >= 12 ? 'PM' : 'AM' };
+};
+const formatoHora = (h24) => {
+  const { txt, ampm } = deHora24(h24);
+  return `${txt} ${ampm}`;
+};
+
+const cobradoDe = (p) => (p.pago === 'pagado' ? p.total : p.pago === 'abono' ? p.abono || 0 : 0);
+const debeDe = (p) => Math.max(p.total - cobradoDe(p), 0);
+const estaAtrasado = (p) => {
+  if (p.estado === 'listo' || !p.fecha) return false;
+  const limite = p.hora ? new Date(`${p.fecha}T${p.hora}`) : new Date(deISO(p.fecha).getTime() + 86399000);
+  return limite < new Date();
+};
+const enlaceWhatsApp = (p) => {
+  const d = p.telefono.replace(/\D/g, '');
+  const numero = d.length === 10 ? `1${d}` : d;
+  const debe = debeDe(p);
+  const msg = `Hola ${p.cliente}, tu pedido (${p.items}) está listo.${debe ? ` Queda pendiente ${formatoMonto(debe)}.` : ''} ¡Gracias!`;
+  return `https://wa.me/${numero}?text=${encodeURIComponent(msg)}`;
+};
 
 // Extrae monto y cliente del texto dictado
 const analizarDictado = (texto) => {
@@ -26,52 +84,112 @@ const analizarDictado = (texto) => {
   return { monto, cliente: matchCliente ? matchCliente[1].trim() : '' };
 };
 
-const limpiarMonto = (v) => v.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1');
+const vacio = () => ({
+  cliente: '', telefono: '', items: '', monto: '', fecha: sumarDias(0),
+  hora: '', ampm: 'PM', pago: 'sin', abono: '', notas: '',
+});
 
 const FILTROS = [
   { id: 'todos', etiqueta: 'Todos' },
   { id: 'pendiente', etiqueta: 'Pendientes' },
   { id: 'listo', etiqueta: 'Listos' },
 ];
+const PAGOS = [
+  { id: 'sin', etiqueta: 'Sin pagar' },
+  { id: 'abono', etiqueta: 'Abono' },
+  { id: 'pagado', etiqueta: 'Pagado' },
+];
 
 const campo =
   'w-full rounded-xl border border-borde bg-tinta/60 px-4 py-3 text-base text-harina placeholder:text-niebla/60 transition-colors focus:border-mantequilla focus:outline-none';
+const etiquetaCampo = 'mb-1.5 block text-sm text-niebla';
 const boton = 'grid size-11 shrink-0 place-items-center rounded-xl border transition-colors';
+const chip = (activo) =>
+  `rounded-full border px-3.5 py-2 text-sm font-semibold transition-colors ${
+    activo ? 'border-mantequilla bg-mantequilla text-tinta' : 'border-borde text-niebla hover:bg-white/5 hover:text-harina'
+  }`;
 
+/* ---------- Calendario propio ---------- */
+function Calendario({ valor, onElegir }) {
+  const base = valor ? deISO(valor) : new Date();
+  const [mes, setMes] = useState(new Date(base.getFullYear(), base.getMonth(), 1));
+  const hoy = sumarDias(0);
+  const vacios = (mes.getDay() + 6) % 7;
+  const dias = new Date(mes.getFullYear(), mes.getMonth() + 1, 0).getDate();
+  const celdas = [...Array(vacios).fill(null), ...Array.from({ length: dias }, (_, i) => i + 1)];
+  const mover = (n) => setMes(new Date(mes.getFullYear(), mes.getMonth() + n, 1));
+
+  return (
+    <div className="aparecer mt-3 rounded-xl border border-borde bg-tinta/60 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <button type="button" onClick={() => mover(-1)} aria-label="Mes anterior" className="grid size-9 place-items-center rounded-lg hover:bg-white/5">
+          <ChevronLeft size={18} />
+        </button>
+        <span className="font-semibold capitalize">{mes.toLocaleDateString('es-DO', { month: 'long', year: 'numeric' })}</span>
+        <button type="button" onClick={() => mover(1)} aria-label="Mes siguiente" className="grid size-9 place-items-center rounded-lg hover:bg-white/5">
+          <ChevronRight size={18} />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-xs text-niebla">
+        {['L', 'M', 'X', 'J', 'V', 'S', 'D'].map((d) => <span key={d} className="py-1">{d}</span>)}
+        {celdas.map((dia, i) => {
+          if (!dia) return <span key={`v${i}`} />;
+          const iso = aISO(new Date(mes.getFullYear(), mes.getMonth(), dia));
+          const activo = iso === valor;
+          return (
+            <button
+              key={iso}
+              type="button"
+              disabled={iso < hoy}
+              onClick={() => onElegir(iso)}
+              className={`grid h-9 place-items-center rounded-lg text-sm tabular-nums transition-colors disabled:opacity-30 ${
+                activo ? 'bg-mantequilla font-bold text-tinta' : iso === hoy ? 'border border-mantequilla/50 text-harina' : 'text-harina hover:bg-white/5'
+              }`}
+            >
+              {dia}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- App ---------- */
 export default function App() {
-  const [pedidos, setPedidos] = useState(cargarPedidos);
+  const [pedidos, setPedidos] = useState(() => leer('chefnote_pedidos'));
+  const [historial, setHistorial] = useState(() => leer('chefnote_historial'));
   const [escuchando, setEscuchando] = useState(false);
   const [transcripcion, setTranscripcion] = useState('');
-  const [cliente, setCliente] = useState('');
-  const [items, setItems] = useState('');
-  const [monto, setMonto] = useState('');
+  const [form, setForm] = useState(vacio);
+  const [calAbierto, setCalAbierto] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
   const [filtro, setFiltro] = useState('todos');
   const [aviso, setAviso] = useState(null);
   const [confirmacion, setConfirmacion] = useState(null);
+  const [verHistorial, setVerHistorial] = useState(false);
   const reconocimientoRef = useRef(null);
   const formularioRef = useRef(null);
   const avisoTimer = useRef(null);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('chefnote_pedidos', JSON.stringify(pedidos));
-    } catch {
-      /* almacenamiento lleno o bloqueado: la app sigue funcionando */
-    }
-  }, [pedidos]);
+  const poner = (clave, valor) => setForm((f) => ({ ...f, [clave]: valor }));
 
+  useEffect(() => guardar('chefnote_pedidos', pedidos), [pedidos]);
+  useEffect(() => guardar('chefnote_historial', historial), [historial]);
   useEffect(() => () => {
     reconocimientoRef.current?.stop();
     clearTimeout(avisoTimer.current);
   }, []);
-
   useEffect(() => {
-    if (!confirmacion) return;
-    const alTeclear = (e) => e.key === 'Escape' && setConfirmacion(null);
+    if (!confirmacion && !verHistorial) return;
+    const alTeclear = (e) => {
+      if (e.key !== 'Escape') return;
+      if (confirmacion) setConfirmacion(null);
+      else setVerHistorial(false);
+    };
     window.addEventListener('keydown', alTeclear);
     return () => window.removeEventListener('keydown', alTeclear);
-  }, [confirmacion]);
+  }, [confirmacion, verHistorial]);
 
   const avisar = (texto, accion) => {
     clearTimeout(avisoTimer.current);
@@ -97,9 +215,7 @@ export default function App() {
       const texto = event.results[0][0].transcript;
       const dato = analizarDictado(texto);
       setTranscripcion(texto);
-      setItems(texto);
-      if (dato.monto) setMonto(dato.monto);
-      setCliente(dato.cliente || 'Cliente dictado');
+      setForm((f) => ({ ...f, items: texto, monto: dato.monto || f.monto, cliente: dato.cliente || 'Cliente dictado' }));
     };
     recognition.onerror = (e) => {
       setEscuchando(false);
@@ -119,28 +235,49 @@ export default function App() {
   };
 
   const limpiarFormulario = () => {
-    setCliente('');
-    setItems('');
-    setMonto('');
+    setForm(vacio());
     setTranscripcion('');
+    setCalAbierto(false);
     setEditandoId(null);
   };
 
   const guardarPedido = (e) => {
     e.preventDefault();
-    if (!items.trim()) return;
-    const datos = { cliente: cliente.trim() || 'Cliente general', items: items.trim(), total: Number(monto) || 0 };
+    if (!form.items.trim()) return;
+    const total = Number(form.monto) || 0;
+    let hora = '';
+    if (form.hora.trim()) {
+      hora = aHora24(form.hora, form.ampm);
+      if (!hora) {
+        avisar('Revisa la hora de entrega, por ejemplo 3:30');
+        return;
+      }
+    }
+    let pago = form.pago;
+    const abono = Number(form.abono) || 0;
+    if (pago === 'abono') {
+      if (abono <= 0) {
+        avisar('Escribe cuánto abonó el cliente');
+        return;
+      }
+      if (total > 0 && abono >= total) pago = 'pagado';
+    }
+    const datos = {
+      cliente: form.cliente.trim() || 'Cliente general',
+      telefono: form.telefono,
+      items: form.items.trim(),
+      total,
+      fecha: form.fecha,
+      hora,
+      pago,
+      abono: pago === 'abono' ? abono : 0,
+      notas: form.notas.trim(),
+    };
     if (editandoId) {
       setPedidos((prev) => prev.map((p) => (p.id === editandoId ? { ...p, ...datos } : p)));
       avisar('Pedido actualizado');
     } else {
-      const nuevo = {
-        id: Date.now(),
-        ...datos,
-        estado: 'pendiente',
-        hora: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-      setPedidos((prev) => [nuevo, ...prev]);
+      setPedidos((prev) => [{ id: Date.now(), ...datos, estado: 'pendiente' }, ...prev]);
       setFiltro((f) => (f === 'listo' ? 'todos' : f));
       avisar('Pedido guardado');
     }
@@ -148,18 +285,31 @@ export default function App() {
   };
 
   const empezarEdicion = (p) => {
+    const { txt, ampm } = deHora24(p.hora);
     setEditandoId(p.id);
-    setCliente(p.cliente);
-    setItems(p.items);
-    setMonto(String(p.total));
+    setForm({
+      cliente: p.cliente, telefono: p.telefono || '', items: p.items, monto: String(p.total),
+      fecha: p.fecha || sumarDias(0), hora: txt, ampm, pago: p.pago || 'sin',
+      abono: p.abono ? String(p.abono) : '', notas: p.notas || '',
+    });
     setTranscripcion('');
     formularioRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
   const cambiarEstado = (id) =>
-    setPedidos((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, estado: p.estado === 'pendiente' ? 'listo' : 'pendiente' } : p))
-    );
+    setPedidos((prev) => prev.map((p) => (p.id === id ? { ...p, estado: p.estado === 'pendiente' ? 'listo' : 'pendiente' } : p)));
+
+  const marcarPagado = (p) => {
+    const antes = { pago: p.pago || 'sin', abono: p.abono || 0 };
+    setPedidos((prev) => prev.map((x) => (x.id === p.id ? { ...x, pago: 'pagado', abono: 0 } : x)));
+    avisar('Marcado como pagado', {
+      etiqueta: 'Deshacer',
+      fn: () => {
+        setPedidos((prev) => prev.map((x) => (x.id === p.id ? { ...x, ...antes } : x)));
+        setAviso(null);
+      },
+    });
+  };
 
   const eliminarPedido = (pedido) => {
     const indice = pedidos.findIndex((p) => p.id === pedido.id);
@@ -179,16 +329,22 @@ export default function App() {
   };
 
   const pedirCierre = () => {
-    const listos = pedidos.filter((p) => p.estado === 'listo').length;
-    if (!listos) {
+    const listos = pedidos.filter((p) => p.estado === 'listo');
+    if (!listos.length) {
       avisar('Todavía no hay pedidos listos para cerrar');
       return;
     }
+    const sinCobrar = listos.reduce((a, p) => a + debeDe(p), 0);
     setConfirmacion({
       titulo: 'Cerrar el día',
-      texto: `Se archivarán ${listos} pedido${listos > 1 ? 's' : ''} listo${listos > 1 ? 's' : ''} y las ventas volverán a $0. Los pendientes se quedan.`,
+      etiqueta: 'Cerrar el día',
+      texto: `Se guardarán ${listos.length} pedido${listos.length > 1 ? 's' : ''} listo${listos.length > 1 ? 's' : ''} en el historial.${
+        sinCobrar ? ` Ojo: quedan ${formatoMonto(sinCobrar)} sin cobrar en esos pedidos.` : ''
+      } Los pendientes se quedan.`,
       accion: () => {
-        if (pedidos.find((p) => p.id === editandoId)?.estado === 'listo') limpiarFormulario();
+        const hoy = sumarDias(0);
+        setHistorial((h) => [...listos.map((p) => ({ ...p, cerrado: hoy })), ...h]);
+        if (listos.some((p) => p.id === editandoId)) limpiarFormulario();
         setPedidos((prev) => prev.filter((p) => p.estado !== 'listo'));
         setConfirmacion(null);
         avisar('Día cerrado');
@@ -196,14 +352,38 @@ export default function App() {
     });
   };
 
-  const totalVentas = pedidos.filter((p) => p.estado === 'listo').reduce((acc, p) => acc + p.total, 0);
+  const pedirVaciarHistorial = () =>
+    setConfirmacion({
+      titulo: 'Vaciar historial',
+      etiqueta: 'Vaciar',
+      texto: 'Se borrarán todos los días guardados. Esto no se puede deshacer.',
+      accion: () => {
+        setHistorial([]);
+        setConfirmacion(null);
+        avisar('Historial vaciado');
+      },
+    });
+
+  const cobrado = pedidos.reduce((a, p) => a + cobradoDe(p), 0);
+  const porCobrar = pedidos.reduce((a, p) => a + debeDe(p), 0);
   const cuenta = {
     todos: pedidos.length,
     pendiente: pedidos.filter((p) => p.estado === 'pendiente').length,
     listo: pedidos.filter((p) => p.estado === 'listo').length,
   };
-  const visibles = filtro === 'todos' ? pedidos : pedidos.filter((p) => p.estado === filtro);
+  const clave = (p) => `${p.fecha || '9999-99-99'}T${p.hora || '23:59'}`;
+  const visibles = (filtro === 'todos' ? pedidos : pedidos.filter((p) => p.estado === filtro)).sort((a, b) =>
+    a.estado === b.estado ? clave(a).localeCompare(clave(b)) : a.estado === 'listo' ? 1 : -1
+  );
   const fecha = new Date().toLocaleDateString('es-DO', { weekday: 'long', day: 'numeric', month: 'long' });
+  const chipsDias = Array.from({ length: 6 }, (_, i) => sumarDias(i));
+  if (form.fecha && !chipsDias.includes(form.fecha)) chipsDias.push(form.fecha);
+  const grupos = Object.entries(
+    historial.reduce((acc, p) => {
+      (acc[p.cerrado] ||= []).push(p);
+      return acc;
+    }, {})
+  ).sort((a, b) => b[0].localeCompare(a[0]));
 
   return (
     <div className="mx-auto max-w-2xl px-4 pb-24 pt-6">
@@ -221,8 +401,9 @@ export default function App() {
           </div>
         </div>
         <div className="text-right">
-          <p className="text-xs text-niebla">Ventas del día</p>
-          <p className="text-2xl font-bold tabular-nums text-mantequilla">{formatoMonto(totalVentas)}</p>
+          <p className="text-xs text-niebla">Cobrado</p>
+          <p className="text-2xl font-bold tabular-nums text-mantequilla">{formatoMonto(cobrado)}</p>
+          {porCobrar > 0 && <p className="text-xs tabular-nums text-niebla">Por cobrar {formatoMonto(porCobrar)}</p>}
         </div>
       </header>
 
@@ -255,54 +436,142 @@ export default function App() {
       <form
         ref={formularioRef}
         onSubmit={guardarPedido}
-        className={`mb-10 rounded-2xl border bg-panel p-5 transition-colors ${
-          editandoId ? 'border-mantequilla' : 'border-borde'
-        }`}
+        className={`mb-10 rounded-2xl border bg-panel p-5 transition-colors ${editandoId ? 'border-mantequilla' : 'border-borde'}`}
       >
         <h2 className="mb-4 text-lg font-semibold">{editandoId ? 'Editar pedido' : 'Nuevo pedido'}</h2>
         <div className="flex flex-col gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block">
+              <span className={etiquetaCampo}>Cliente</span>
+              <input type="text" value={form.cliente} onChange={(e) => poner('cliente', e.target.value)} placeholder="Ana" className={campo} />
+            </label>
+            <label className="block">
+              <span className={etiquetaCampo}>Teléfono (para WhatsApp)</span>
+              <input
+                type="text"
+                inputMode="tel"
+                value={form.telefono}
+                onChange={(e) => poner('telefono', e.target.value.replace(/[^\d+\s-]/g, ''))}
+                placeholder="809 555 0123"
+                className={campo}
+              />
+            </label>
+          </div>
+
           <label className="block">
-            <span className="mb-1.5 block text-sm text-niebla">Cliente</span>
-            <input type="text" value={cliente} onChange={(e) => setCliente(e.target.value)} placeholder="Ana" className={campo} />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-sm text-niebla">Pedido</span>
+            <span className={etiquetaCampo}>Pedido</span>
             <input
               type="text"
-              value={items}
-              onChange={(e) => setItems(e.target.value)}
+              value={form.items}
+              onChange={(e) => poner('items', e.target.value)}
               required
               placeholder="2 brownies, 1 pie de limón"
               className={campo}
             />
           </label>
-          <div className="flex items-end gap-3">
-            <label className="block flex-1">
-              <span className="mb-1.5 block text-sm text-niebla">Monto</span>
-              <span className="relative block">
+
+          <div>
+            <span className={etiquetaCampo}>Entrega</span>
+            <div className="flex flex-wrap gap-2">
+              {chipsDias.map((iso) => (
+                <button key={iso} type="button" onClick={() => { poner('fecha', iso); setCalAbierto(false); }} className={chip(form.fecha === iso)}>
+                  {etiquetaDia(iso)}
+                </button>
+              ))}
+              <button type="button" onClick={() => setCalAbierto((v) => !v)} className={chip(calAbierto)}>
+                Otro día
+              </button>
+            </div>
+            {calAbierto && <Calendario valor={form.fecha} onElegir={(iso) => { poner('fecha', iso); setCalAbierto(false); }} />}
+            <div className="mt-3 flex items-center gap-3">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={form.hora}
+                onChange={(e) => poner('hora', e.target.value.replace(/[^\d:]/g, '').slice(0, 5))}
+                placeholder="3:30"
+                aria-label="Hora de entrega"
+                className={`${campo} w-28 tabular-nums`}
+              />
+              <div className="flex rounded-xl bg-tinta/60 p-1">
+                {['AM', 'PM'].map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => poner('ampm', m)}
+                    className={`rounded-lg px-3.5 py-2 text-sm font-semibold transition-colors ${form.ampm === m ? 'bg-harina text-tinta' : 'text-niebla hover:text-harina'}`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <span className="text-sm text-niebla">Hora opcional</span>
+            </div>
+          </div>
+
+          <div>
+            <span className={etiquetaCampo}>Monto y pago</span>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="relative block w-36">
                 <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-niebla">$</span>
                 <input
                   type="text"
                   inputMode="decimal"
-                  value={monto}
-                  onChange={(e) => setMonto(limpiarMonto(e.target.value))}
+                  value={form.monto}
+                  onChange={(e) => poner('monto', limpiarMonto(e.target.value))}
                   placeholder="0"
+                  aria-label="Monto total"
                   className={`${campo} pl-8 tabular-nums`}
                 />
               </span>
-            </label>
+              <div className="flex gap-2">
+                {PAGOS.map((o) => (
+                  <button key={o.id} type="button" onClick={() => poner('pago', o.id)} className={chip(form.pago === o.id)}>
+                    {o.etiqueta}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {form.pago === 'abono' && (
+              <span className="relative mt-3 block w-48">
+                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-niebla">$</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={form.abono}
+                  onChange={(e) => poner('abono', limpiarMonto(e.target.value))}
+                  placeholder="Cuánto abonó"
+                  aria-label="Monto del abono"
+                  className={`${campo} pl-8 tabular-nums`}
+                />
+              </span>
+            )}
+          </div>
+
+          <label className="block">
+            <span className={etiquetaCampo}>Notas</span>
+            <input
+              type="text"
+              value={form.notas}
+              onChange={(e) => poner('notas', e.target.value)}
+              placeholder="Sin nueces, mensaje en la torta…"
+              className={campo}
+            />
+          </label>
+
+          <div className="flex justify-end gap-3">
             {editandoId && (
               <button
                 type="button"
                 onClick={limpiarFormulario}
-                className="flex h-12 items-center gap-1.5 rounded-xl border border-borde px-4 font-semibold text-harina transition-colors hover:bg-white/5"
+                className="flex h-12 items-center gap-1.5 rounded-xl border border-borde px-4 font-semibold transition-colors hover:bg-white/5"
               >
                 <X size={18} /> Cancelar
               </button>
             )}
             <button
               type="submit"
-              className="flex h-12 items-center gap-1.5 rounded-xl bg-mantequilla px-5 font-bold text-tinta transition-colors hover:bg-[#f6cf72]"
+              className="flex h-12 items-center gap-1.5 rounded-xl bg-mantequilla px-6 font-bold text-tinta transition-colors hover:bg-[#f6cf72]"
             >
               {editandoId ? <Save size={18} /> : <Plus size={18} />} {editandoId ? 'Actualizar' : 'Guardar'}
             </button>
@@ -312,30 +581,41 @@ export default function App() {
 
       {/* Comandas */}
       <section aria-label="Pedidos">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div className="flex rounded-xl bg-panel p-1" role="tablist" aria-label="Filtrar pedidos">
-            {FILTROS.map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                role="tab"
-                aria-selected={filtro === f.id}
-                onClick={() => setFiltro(f.id)}
-                className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
-                  filtro === f.id ? 'bg-harina text-tinta' : 'text-niebla hover:text-harina'
-                }`}
-              >
-                {f.etiqueta} <span className="tabular-nums opacity-60">{cuenta[f.id]}</span>
-              </button>
-            ))}
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold">Pedidos</h2>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setVerHistorial(true)}
+              className="flex items-center gap-1.5 rounded-xl border border-borde px-3 py-2.5 text-sm font-semibold text-niebla transition-colors hover:bg-white/5 hover:text-harina"
+            >
+              <History size={16} /> Historial
+            </button>
+            <button
+              type="button"
+              onClick={pedirCierre}
+              className="flex items-center gap-1.5 rounded-xl border border-borde px-3 py-2.5 text-sm font-semibold text-niebla transition-colors hover:bg-white/5 hover:text-harina"
+            >
+              <Archive size={16} /> Cerrar el día
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={pedirCierre}
-            className="flex items-center gap-1.5 rounded-xl border border-borde px-3 py-2.5 text-sm font-semibold text-niebla transition-colors hover:bg-white/5 hover:text-harina"
-          >
-            <Archive size={16} /> Cerrar el día
-          </button>
+        </div>
+
+        <div className="mb-4 flex w-fit max-w-full overflow-x-auto rounded-xl bg-panel p-1" role="tablist" aria-label="Filtrar pedidos">
+          {FILTROS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              role="tab"
+              aria-selected={filtro === f.id}
+              onClick={() => setFiltro(f.id)}
+              className={`whitespace-nowrap rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
+                filtro === f.id ? 'bg-harina text-tinta' : 'text-niebla hover:text-harina'
+              }`}
+            >
+              {f.etiqueta} <span className="tabular-nums opacity-60">{cuenta[f.id]}</span>
+            </button>
+          ))}
         </div>
 
         {visibles.length === 0 && (
@@ -350,10 +630,10 @@ export default function App() {
         <ul className="flex flex-col gap-4">
           {visibles.map((p) => {
             const listo = p.estado === 'listo';
-            const sepBorde = listo ? 'border-borde' : 'border-tinta/25';
-            const btnSuave = listo
-              ? 'border-borde text-niebla hover:bg-white/5'
-              : 'border-tinta/20 text-tinta hover:bg-tinta/5';
+            const atrasado = estaAtrasado(p);
+            const debe = debeDe(p);
+            const pagado = p.pago === 'pagado';
+            const btnSuave = listo ? 'border-borde text-niebla hover:bg-white/5' : 'border-tinta/20 text-tinta hover:bg-tinta/5';
             return (
               <li
                 key={p.id}
@@ -363,30 +643,56 @@ export default function App() {
               >
                 <div className="flex items-start justify-between gap-3 p-4 pb-3">
                   <h3 className={`text-lg font-bold leading-tight ${listo ? 'text-harina' : ''}`}>{p.cliente}</h3>
-                  <span className="flex shrink-0 items-center gap-1 pt-0.5 text-sm tabular-nums opacity-70">
-                    <Clock size={13} /> {p.hora}
+                  <span
+                    className={`flex shrink-0 items-center gap-1.5 pt-0.5 text-sm font-semibold tabular-nums ${
+                      atrasado ? 'text-[#c2263f]' : 'opacity-70'
+                    }`}
+                  >
+                    <CalendarClock size={14} />
+                    {p.fecha ? etiquetaDia(p.fecha) : 'Sin fecha'}
+                    {p.hora ? ` · ${formatoHora(p.hora)}` : ''}
+                    {atrasado ? ' · Atrasado' : ''}
                   </span>
                 </div>
 
-                {/* Perforado de la comanda */}
                 <div className="relative">
-                  <div className={`border-t border-dashed ${sepBorde}`} />
+                  <div className={`border-t border-dashed ${listo ? 'border-borde' : 'border-tinta/25'}`} />
                   <span className="absolute -left-2 -top-2 size-4 rounded-full bg-tinta" />
                   <span className="absolute -right-2 -top-2 size-4 rounded-full bg-tinta" />
                 </div>
 
                 <ul className="space-y-1 px-4 pb-3 pt-3.5">
                   {lineas(p.items).map((linea, i) => (
-                    <li key={i} className={`text-base ${listo ? 'line-through decoration-niebla/40' : ''}`}>
-                      {linea}
-                    </li>
+                    <li key={i} className={`text-base ${listo ? 'line-through decoration-niebla/40' : ''}`}>{linea}</li>
                   ))}
                 </ul>
 
+                {p.notas && (
+                  <p className={`mx-4 mb-3 flex items-start gap-2 rounded-lg px-3 py-2 text-sm ${listo ? 'bg-white/5' : 'bg-mantequilla/30'}`}>
+                    <StickyNote size={15} className="mt-0.5 shrink-0" /> {p.notas}
+                  </p>
+                )}
+
                 <div className="flex items-center justify-between gap-3 px-4 pb-4">
-                  <span className={`text-xl font-extrabold tabular-nums ${listo ? 'text-pistacho' : ''}`}>
-                    {formatoMonto(p.total)}
-                  </span>
+                  <div className="min-w-0">
+                    <span className={`block text-xl font-extrabold tabular-nums ${listo ? 'text-harina' : ''}`}>{formatoMonto(p.total)}</span>
+                    {pagado ? (
+                      <span className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${listo ? 'text-pistacho' : 'text-[#2f7a55]'}`}>
+                        <Check size={14} strokeWidth={3} /> Pagado
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => marcarPagado(p)}
+                        title="Marcar como pagado"
+                        className={`mt-1 rounded-full border px-2.5 py-1 text-sm font-semibold transition-colors ${
+                          listo ? 'border-frambuesa/40 text-frambuesa hover:bg-frambuesa/10' : 'border-[#c2263f]/40 text-[#c2263f] hover:bg-[#c2263f]/10'
+                        }`}
+                      >
+                        {p.pago === 'abono' ? `Debe ${formatoMonto(debe)}` : 'Sin pagar'} · Cobrar
+                      </button>
+                    )}
+                  </div>
                   <div className="flex gap-2">
                     <button
                       type="button"
@@ -399,13 +705,19 @@ export default function App() {
                     >
                       {listo ? <Undo2 size={20} /> : <Check size={22} strokeWidth={2.6} />}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => empezarEdicion(p)}
-                      title="Editar pedido"
-                      aria-label="Editar pedido"
-                      className={`${boton} ${btnSuave}`}
-                    >
+                    {p.telefono && (
+                      <a
+                        href={enlaceWhatsApp(p)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Avisar por WhatsApp"
+                        aria-label="Avisar por WhatsApp"
+                        className={`${boton} ${btnSuave}`}
+                      >
+                        <MessageCircle size={18} />
+                      </a>
+                    )}
+                    <button type="button" onClick={() => empezarEdicion(p)} title="Editar pedido" aria-label="Editar pedido" className={`${boton} ${btnSuave}`}>
                       <Pencil size={18} />
                     </button>
                     <button
@@ -425,12 +737,76 @@ export default function App() {
         </ul>
       </section>
 
+      {/* Historial */}
+      {verHistorial && (
+        <div className="fixed inset-0 z-40 overflow-y-auto bg-tinta" role="dialog" aria-modal="true" aria-label="Historial">
+          <div className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+            <div className="mb-6 flex items-center justify-between">
+              <h2 className="text-2xl font-extrabold tracking-tight">Historial</h2>
+              <div className="flex gap-2">
+                {historial.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={pedirVaciarHistorial}
+                    className="rounded-xl border border-borde px-3 py-2.5 text-sm font-semibold text-niebla transition-colors hover:bg-white/5 hover:text-frambuesa"
+                  >
+                    Vaciar
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setVerHistorial(false)}
+                  aria-label="Cerrar historial"
+                  className="grid size-11 place-items-center rounded-xl border border-borde transition-colors hover:bg-white/5"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+            </div>
+            {grupos.length === 0 && (
+              <p className="rounded-2xl border border-dashed border-borde px-6 py-12 text-center text-niebla">
+                Aquí aparecerán los días que cierres.
+              </p>
+            )}
+            <div className="flex flex-col gap-5">
+              {grupos.map(([dia, lista]) => (
+                <section key={dia} className="rounded-2xl border border-borde bg-panel p-4">
+                  <div className="mb-3 flex items-baseline justify-between gap-3">
+                    <h3 className="font-bold first-letter:uppercase">
+                      {deISO(dia).toLocaleDateString('es-DO', { weekday: 'long', day: 'numeric', month: 'long' })}
+                    </h3>
+                    <span className="text-sm tabular-nums text-niebla">
+                      {lista.length} pedido{lista.length > 1 ? 's' : ''} ·{' '}
+                      <span className="font-bold text-mantequilla">{formatoMonto(lista.reduce((a, p) => a + cobradoDe(p), 0))}</span> cobrado
+                    </span>
+                  </div>
+                  <ul className="divide-y divide-borde">
+                    {lista.map((p) => (
+                      <li key={p.id} className="flex items-start justify-between gap-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="font-semibold">{p.cliente}</p>
+                          <p className="break-words text-sm text-niebla">{p.items}</p>
+                        </div>
+                        <div className="shrink-0 text-right tabular-nums">
+                          <p className="font-semibold">{formatoMonto(p.total)}</p>
+                          {debeDe(p) > 0 && <p className="text-xs text-frambuesa">Debe {formatoMonto(debeDe(p))}</p>}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Aviso */}
       {aviso && (
         <div
           role="status"
           aria-live="polite"
-          className="aparecer fixed inset-x-4 bottom-5 z-40 mx-auto flex max-w-md items-center justify-between gap-4 rounded-xl border border-borde bg-panel px-4 py-3 text-sm shadow-xl shadow-black/40"
+          className="aparecer fixed inset-x-4 bottom-5 z-[60] mx-auto flex max-w-md items-center justify-between gap-4 rounded-xl border border-borde bg-panel px-4 py-3 text-sm shadow-xl shadow-black/40"
         >
           <span>{aviso.texto}</span>
           {aviso.accion && (
@@ -443,10 +819,7 @@ export default function App() {
 
       {/* Confirmación */}
       {confirmacion && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-tinta/80 p-4 backdrop-blur-sm"
-          onClick={() => setConfirmacion(null)}
-        >
+        <div className="fixed inset-0 z-50 grid place-items-center bg-tinta/80 p-4 backdrop-blur-sm" onClick={() => setConfirmacion(null)}>
           <div
             role="alertdialog"
             aria-modal="true"
@@ -470,7 +843,7 @@ export default function App() {
                 onClick={confirmacion.accion}
                 className="rounded-xl bg-mantequilla px-4 py-2.5 font-bold text-tinta transition-colors hover:bg-[#f6cf72]"
               >
-                Cerrar el día
+                {confirmacion.etiqueta}
               </button>
             </div>
           </div>
