@@ -32,14 +32,16 @@ const guardar = (clave, valor) => {
   }
 };
 
-const formatoMonto = (n) => `$${Number(n || 0).toLocaleString('es-DO')}`;
+const formatoNumero = new Intl.NumberFormat('es-AR', { useGrouping: 'always', maximumFractionDigits: 2 });
+const formatoMonto = (n) => `$${formatoNumero.format(Number(n || 0))}`;
+const verMonto = (v) => (v ? formatoNumero.format(Number(v)) : '');
 const lineas = (texto) => texto.split(/\s*,\s*/).filter(Boolean);
-const limpiarMonto = (v) => v.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1');
+const limpiarMonto = (v) => v.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
 
 const etiquetaDia = (iso) => {
   if (iso === sumarDias(0)) return 'Hoy';
   if (iso === sumarDias(1)) return 'Mañana';
-  return deISO(iso).toLocaleDateString('es-DO', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '');
+  return deISO(iso).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '');
 };
 const aHora24 = (txt, ampm) => {
   const m = txt.trim().match(/^(\d{1,2})(?::?(\d{2}))?$/);
@@ -68,9 +70,24 @@ const estaAtrasado = (p) => {
   const limite = p.hora ? new Date(`${p.fecha}T${p.hora}`) : new Date(deISO(p.fecha).getTime() + 86399000);
   return limite < new Date();
 };
+// Celulares de Argentina: 54 + 9 + código de área + número (sin 0 ni 15)
+const numeroWhatsApp = (tel) => {
+  let d = tel.replace(/\D/g, '');
+  if (d.startsWith('54')) d = d.slice(2);
+  if (d.startsWith('9') && d.length === 11) d = d.slice(1);
+  d = d.replace(/^0/, '');
+  if (d.length === 12) {
+    for (const n of [2, 3, 4]) {
+      if (d.slice(n, n + 2) === '15') {
+        d = d.slice(0, n) + d.slice(n + 2);
+        break;
+      }
+    }
+  }
+  return d.length === 10 ? `549${d}` : d;
+};
 const enlaceWhatsApp = (p) => {
-  const d = p.telefono.replace(/\D/g, '');
-  const numero = d.length === 10 ? `1${d}` : d;
+  const numero = numeroWhatsApp(p.telefono);
   const debe = debeDe(p);
   const msg = `Hola ${p.cliente}, tu pedido (${p.items}) está listo.${debe ? ` Queda pendiente ${formatoMonto(debe)}.` : ''} ¡Gracias!`;
   return `https://wa.me/${numero}?text=${encodeURIComponent(msg)}`;
@@ -79,7 +96,8 @@ const enlaceWhatsApp = (p) => {
 // Extrae monto y cliente del texto dictado
 const analizarDictado = (texto) => {
   const matchMonto = texto.match(/(\d[\d.,]*)\s*(?:pesos|peso|\$)/i) || texto.match(/\$\s*(\d[\d.,]*)/);
-  const monto = matchMonto ? matchMonto[1].replace(/[.,](?=\d{3}\b)/g, '').replace(',', '.') : '';
+  const n = matchMonto ? Number(matchMonto[1].replace(/\./g, '').replace(',', '.')) : NaN;
+  const monto = Number.isFinite(n) ? String(Math.round(n)) : '';
   const matchCliente = texto.match(/\bpara\s+([^,.\d]+?)(?=\s+(?:con|de|y|por)\b|[,.\d]|$)/i);
   return { monto, cliente: matchCliente ? matchCliente[1].trim() : '' };
 };
@@ -125,7 +143,7 @@ function Calendario({ valor, onElegir }) {
         <button type="button" onClick={() => mover(-1)} aria-label="Mes anterior" className="grid size-9 place-items-center rounded-lg hover:bg-white/5">
           <ChevronLeft size={18} />
         </button>
-        <span className="font-semibold capitalize">{mes.toLocaleDateString('es-DO', { month: 'long', year: 'numeric' })}</span>
+        <span className="font-semibold capitalize">{mes.toLocaleDateString('es-AR', { month: 'long', year: 'numeric' })}</span>
         <button type="button" onClick={() => mover(1)} aria-label="Mes siguiente" className="grid size-9 place-items-center rounded-lg hover:bg-white/5">
           <ChevronRight size={18} />
         </button>
@@ -208,7 +226,7 @@ export default function App() {
       return;
     }
     const recognition = new SpeechRecognition();
-    recognition.lang = 'es-DO';
+    recognition.lang = 'es-AR';
     recognition.continuous = false;
     recognition.interimResults = false;
     recognition.onresult = (event) => {
@@ -375,7 +393,7 @@ export default function App() {
   const visibles = (filtro === 'todos' ? pedidos : pedidos.filter((p) => p.estado === filtro)).sort((a, b) =>
     a.estado === b.estado ? clave(a).localeCompare(clave(b)) : a.estado === 'listo' ? 1 : -1
   );
-  const fecha = new Date().toLocaleDateString('es-DO', { weekday: 'long', day: 'numeric', month: 'long' });
+  const fecha = new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
   const chipsDias = Array.from({ length: 6 }, (_, i) => sumarDias(i));
   if (form.fecha && !chipsDias.includes(form.fecha)) chipsDias.push(form.fecha);
   const grupos = Object.entries(
@@ -452,7 +470,7 @@ export default function App() {
                 inputMode="tel"
                 value={form.telefono}
                 onChange={(e) => poner('telefono', e.target.value.replace(/[^\d+\s-]/g, ''))}
-                placeholder="809 555 0123"
+                placeholder="11 5555 1234"
                 className={campo}
               />
             </label>
@@ -516,8 +534,8 @@ export default function App() {
                 <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-niebla">$</span>
                 <input
                   type="text"
-                  inputMode="decimal"
-                  value={form.monto}
+                  inputMode="numeric"
+                  value={verMonto(form.monto)}
                   onChange={(e) => poner('monto', limpiarMonto(e.target.value))}
                   placeholder="0"
                   aria-label="Monto total"
@@ -537,8 +555,8 @@ export default function App() {
                 <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-niebla">$</span>
                 <input
                   type="text"
-                  inputMode="decimal"
-                  value={form.abono}
+                  inputMode="numeric"
+                  value={verMonto(form.abono)}
                   onChange={(e) => poner('abono', limpiarMonto(e.target.value))}
                   placeholder="Cuánto abonó"
                   aria-label="Monto del abono"
@@ -773,7 +791,7 @@ export default function App() {
                 <section key={dia} className="rounded-2xl border border-borde bg-panel p-4">
                   <div className="mb-3 flex items-baseline justify-between gap-3">
                     <h3 className="font-bold first-letter:uppercase">
-                      {deISO(dia).toLocaleDateString('es-DO', { weekday: 'long', day: 'numeric', month: 'long' })}
+                      {deISO(dia).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}
                     </h3>
                     <span className="text-sm tabular-nums text-niebla">
                       {lista.length} pedido{lista.length > 1 ? 's' : ''} ·{' '}
