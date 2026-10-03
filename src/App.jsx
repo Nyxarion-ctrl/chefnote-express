@@ -74,10 +74,21 @@ const estaAtrasado = (p) => {
   const limite = p.hora ? new Date(`${p.fecha}T${p.hora}`) : new Date(deISO(p.fecha).getTime() + 86399000);
   return limite < new Date();
 };
-// Números de República Dominicana: 1 + 10 dígitos (809, 829 o 849)
+// Celulares de Argentina: 54 + 9 + código de área + número (sin 0 ni 15)
 const numeroWhatsApp = (tel) => {
-  const d = tel.replace(/\D/g, '');
-  return d.length === 10 ? `1${d}` : d;
+  let d = tel.replace(/\D/g, '');
+  if (d.startsWith('54')) d = d.slice(2);
+  if (d.startsWith('9') && d.length === 11) d = d.slice(1);
+  d = d.replace(/^0/, '');
+  if (d.length === 12) {
+    for (const n of [2, 3, 4]) {
+      if (d.slice(n, n + 2) === '15') {
+        d = d.slice(0, n) + d.slice(n + 2);
+        break;
+      }
+    }
+  }
+  return d.length === 10 ? `549${d}` : d;
 };
 const enlaceWhatsApp = (p) => {
   const numero = numeroWhatsApp(p.telefono);
@@ -486,7 +497,7 @@ export default function App() {
                 inputMode="tel"
                 value={form.telefono}
                 onChange={(e) => poner('telefono', e.target.value.replace(/[^\d+\s-]/g, ''))}
-                placeholder="809 555 0123"
+                placeholder="11 5555 1234"
                 className={campo}
               />
             </label>
