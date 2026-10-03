@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Mic, Check, Plus, Pencil, Trash2, X, Save, Undo2, Archive, ChefHat, CalendarClock,
-  MessageCircle, History, ChevronLeft, ChevronRight, StickyNote, Download, Upload,
+  MessageCircle, History, ChevronLeft, ChevronRight, StickyNote, Download, Upload, Wallet,
 } from 'lucide-react';
 
 // Nombre del negocio para firmar los mensajes de WhatsApp (déjalo vacío para no incluirlo)
@@ -45,6 +45,7 @@ const limpiarMonto = (v) => v.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
 const etiquetaDia = (iso) => {
   if (iso === sumarDias(0)) return 'Hoy';
   if (iso === sumarDias(1)) return 'Mañana';
+  if (iso === sumarDias(-1)) return 'Ayer';
   return deISO(iso).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '');
 };
 const aHora24 = (txt) => {
@@ -56,6 +57,35 @@ const aHora24 = (txt) => {
   return `${pad(h)}:${pad(min)}`;
 };
 const formatoHora = (h24) => `${h24} hs`;
+
+/* ---------- Períodos para las cuentas ---------- */
+const PERIODOS = [
+  { id: 'hoy', etiqueta: 'Hoy' },
+  { id: 'semana', etiqueta: 'Semana' },
+  { id: 'mes', etiqueta: 'Mes' },
+];
+const rangoPeriodo = (periodo) => {
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  if (periodo === 'hoy') return [aISO(hoy), aISO(hoy)];
+  if (periodo === 'semana') {
+    const lunes = new Date(hoy);
+    lunes.setDate(hoy.getDate() - ((hoy.getDay() + 6) % 7));
+    const domingo = new Date(lunes);
+    domingo.setDate(lunes.getDate() + 6);
+    return [aISO(lunes), aISO(domingo)];
+  }
+  return [aISO(new Date(hoy.getFullYear(), hoy.getMonth(), 1)), aISO(new Date(hoy.getFullYear(), hoy.getMonth() + 1, 0))];
+};
+const etiquetaRango = (periodo, [desde, hasta]) => {
+  const corto = (iso) => deISO(iso).toLocaleDateString('es-AR', { day: 'numeric', month: 'short' }).replace('.', '');
+  if (periodo === 'hoy') return deISO(desde).toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
+  if (periodo === 'semana') return `Del ${corto(desde)} al ${corto(hasta)}`;
+  return deISO(desde).toLocaleDateString('es-AR', { month: 'long', year: 'numeric' });
+};
+// Cada pedido cuenta en su fecha de entrega (o en la del cierre si no tenía fecha)
+const fechaVenta = (p) => p.fecha || p.cerrado || '';
+const enRango = (iso, [desde, hasta]) => Boolean(iso) && iso >= desde && iso <= hasta;
 
 const cobradoDe = (p) => (p.pago === 'pagado' ? p.total : p.pago === 'abono' ? p.abono || 0 : 0);
 const debeDe = (p) => Math.max(p.total - cobradoDe(p), 0);
@@ -262,7 +292,7 @@ const chip = (activo) =>
   }`;
 
 /* ---------- Calendario propio ---------- */
-function Calendario({ valor, onElegir }) {
+function Calendario({ valor, onElegir, pasado = false }) {
   const base = valor ? deISO(valor) : new Date();
   const [mes, setMes] = useState(new Date(base.getFullYear(), base.getMonth(), 1));
   const hoy = sumarDias(0);
@@ -292,7 +322,7 @@ function Calendario({ valor, onElegir }) {
             <button
               key={iso}
               type="button"
-              disabled={iso < hoy}
+              disabled={pasado ? iso > hoy : iso < hoy}
               onClick={() => onElegir(iso)}
               className={`grid h-9 place-items-center rounded-lg text-sm tabular-nums transition-colors disabled:opacity-30 ${
                 activo ? 'bg-mantequilla font-bold text-tinta' : iso === hoy ? 'border border-mantequilla/50 text-harina' : 'text-harina hover:bg-white/5'
@@ -320,6 +350,12 @@ export default function App() {
   const [aviso, setAviso] = useState(null);
   const [confirmacion, setConfirmacion] = useState(null);
   const [verHistorial, setVerHistorial] = useState(false);
+  const [verCuentas, setVerCuentas] = useState(false);
+  const [periodo, setPeriodo] = useState('hoy');
+  const [gastos, setGastos] = useState(() => leer('chefnote_gastos'));
+  const [gForm, setGForm] = useState(() => ({ descripcion: '', monto: '', fecha: sumarDias(0) }));
+  const [gCalAbierto, setGCalAbierto] = useState(false);
+  const [editandoGastoId, setEditandoGastoId] = useState(null);
   const [ultimaCopia, setUltimaCopia] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('chefnote_ultima_copia')) || '';
@@ -336,20 +372,22 @@ export default function App() {
 
   useEffect(() => guardar('chefnote_pedidos', pedidos), [pedidos]);
   useEffect(() => guardar('chefnote_historial', historial), [historial]);
+  useEffect(() => guardar('chefnote_gastos', gastos), [gastos]);
   useEffect(() => () => {
     reconocimientoRef.current?.stop();
     clearTimeout(avisoTimer.current);
   }, []);
   useEffect(() => {
-    if (!confirmacion && !verHistorial) return;
+    if (!confirmacion && !verHistorial && !verCuentas) return;
     const alTeclear = (e) => {
       if (e.key !== 'Escape') return;
       if (confirmacion) setConfirmacion(null);
+      else if (verCuentas) setVerCuentas(false);
       else setVerHistorial(false);
     };
     window.addEventListener('keydown', alTeclear);
     return () => window.removeEventListener('keydown', alTeclear);
-  }, [confirmacion, verHistorial]);
+  }, [confirmacion, verHistorial, verCuentas]);
 
   const avisar = (texto, accion) => {
     clearTimeout(avisoTimer.current);
@@ -540,7 +578,7 @@ export default function App() {
 
   const descargarCopia = () => {
     const hoy = sumarDias(0);
-    const datos = { app: 'chefnote-express', version: 1, fecha: new Date().toISOString(), pedidos, historial };
+    const datos = { app: 'chefnote-express', version: 2, fecha: new Date().toISOString(), pedidos, historial, gastos };
     const blob = new Blob([JSON.stringify(datos, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const enlace = document.createElement('a');
@@ -568,10 +606,11 @@ export default function App() {
         setConfirmacion({
           titulo: 'Restaurar copia',
           etiqueta: 'Restaurar',
-          texto: `Se reemplazarán los datos actuales por los de la copia: ${datos.pedidos.length} pedido${datos.pedidos.length === 1 ? '' : 's'} y ${datos.historial.length} en el historial.`,
+          texto: `Se reemplazarán los datos actuales por los de la copia: ${datos.pedidos.length} pedido${datos.pedidos.length === 1 ? '' : 's'} ${datos.historial.length} en el historial y ${(datos.gastos || []).length} gastos.`,
           accion: () => {
             setPedidos(limpiar(datos.pedidos));
             setHistorial(limpiar(datos.historial));
+            setGastos(Array.isArray(datos.gastos) ? datos.gastos : []);
             limpiarFormulario();
             setConfirmacion(null);
             avisar('Copia restaurada');
@@ -583,6 +622,63 @@ export default function App() {
     };
     lector.readAsText(archivo);
   };
+
+  const poneGasto = (clave, valor) => setGForm((f) => ({ ...f, [clave]: valor }));
+  const limpiarGasto = () => {
+    setGForm({ descripcion: '', monto: '', fecha: sumarDias(0) });
+    setGCalAbierto(false);
+    setEditandoGastoId(null);
+  };
+  const guardarGasto = (e) => {
+    e.preventDefault();
+    const monto = Number(gForm.monto) || 0;
+    if (!gForm.descripcion.trim() || monto <= 0) {
+      avisar('Escribe qué se compró y cuánto costó');
+      return;
+    }
+    const datos = { descripcion: gForm.descripcion.trim(), monto, fecha: gForm.fecha };
+    if (editandoGastoId) {
+      setGastos((prev) => prev.map((g) => (g.id === editandoGastoId ? { ...g, ...datos } : g)));
+      avisar('Gasto actualizado');
+    } else {
+      setGastos((prev) => [{ id: Date.now(), ...datos }, ...prev]);
+      avisar('Gasto guardado');
+    }
+    limpiarGasto();
+  };
+  const empezarEdicionGasto = (g) => {
+    setEditandoGastoId(g.id);
+    setGForm({ descripcion: g.descripcion, monto: String(g.monto), fecha: g.fecha });
+  };
+  const eliminarGasto = (gasto) => {
+    const indice = gastos.findIndex((g) => g.id === gasto.id);
+    if (gasto.id === editandoGastoId) limpiarGasto();
+    setGastos((prev) => prev.filter((g) => g.id !== gasto.id));
+    avisar('Gasto eliminado', {
+      etiqueta: 'Deshacer',
+      fn: () => {
+        setGastos((prev) => {
+          const copia = [...prev];
+          copia.splice(Math.min(indice, copia.length), 0, gasto);
+          return copia;
+        });
+        setAviso(null);
+      },
+    });
+  };
+
+  const rango = rangoPeriodo(periodo);
+  const ventasPeriodo = [...pedidos, ...historial].filter((p) => enRango(fechaVenta(p), rango));
+  const gastosPeriodo = gastos
+    .filter((g) => enRango(g.fecha, rango))
+    .sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+  const vendido = ventasPeriodo.reduce((a, p) => a + p.total, 0);
+  const cobradoPeriodo = ventasPeriodo.reduce((a, p) => a + cobradoDe(p), 0);
+  const porCobrarPeriodo = ventasPeriodo.reduce((a, p) => a + debeDe(p), 0);
+  const gastado = gastosPeriodo.reduce((a, g) => a + g.monto, 0);
+  const ganancia = cobradoPeriodo - gastado;
+  const chipsGasto = [sumarDias(0), sumarDias(-1)];
+  if (gForm.fecha && !chipsGasto.includes(gForm.fecha)) chipsGasto.push(gForm.fecha);
 
   const cobrado = pedidos.reduce((a, p) => a + cobradoDe(p), 0);
   const porCobrar = pedidos.reduce((a, p) => a + debeDe(p), 0);
@@ -789,24 +885,22 @@ export default function App() {
 
       {/* Comandas */}
       <section aria-label="Pedidos">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">Pedidos</h2>
-          <div className="flex gap-2">
+        <h2 className="mb-3 text-lg font-semibold">Pedidos</h2>
+        <div className="mb-4 grid grid-cols-3 gap-2">
+          {[
+            { etiqueta: 'Cuentas', Icono: Wallet, accion: () => setVerCuentas(true) },
+            { etiqueta: 'Historial', Icono: History, accion: () => setVerHistorial(true) },
+            { etiqueta: 'Cerrar el día', Icono: Archive, accion: pedirCierre },
+          ].map(({ etiqueta, Icono, accion }) => (
             <button
+              key={etiqueta}
               type="button"
-              onClick={() => setVerHistorial(true)}
-              className="flex items-center gap-1.5 rounded-xl border border-borde px-3 py-2.5 text-sm font-semibold text-niebla transition-colors hover:bg-white/5 hover:text-harina"
+              onClick={accion}
+              className="flex flex-col items-center justify-center gap-1 rounded-xl border border-borde px-2 py-2.5 text-xs font-semibold text-niebla transition-colors hover:bg-white/5 hover:text-harina sm:flex-row sm:gap-1.5 sm:text-sm"
             >
-              <History size={16} /> Historial
+              <Icono size={16} /> {etiqueta}
             </button>
-            <button
-              type="button"
-              onClick={pedirCierre}
-              className="flex items-center gap-1.5 rounded-xl border border-borde px-3 py-2.5 text-sm font-semibold text-niebla transition-colors hover:bg-white/5 hover:text-harina"
-            >
-              <Archive size={16} /> Cerrar el día
-            </button>
-          </div>
+          ))}
         </div>
 
         <div className="mb-4 flex w-fit max-w-full overflow-x-auto rounded-xl bg-panel p-1" role="tablist" aria-label="Filtrar pedidos">
@@ -974,7 +1068,7 @@ export default function App() {
             <div className="mb-6 rounded-2xl border border-borde bg-panel p-4">
               <h3 className="font-bold">Copia de seguridad</h3>
               <p className="mt-1 text-sm text-niebla">
-                Guarda los pedidos y el historial en un archivo, por si se cambia de celular o se borran los datos del navegador.{' '}
+                Guarda los pedidos, el historial y los gastos en un archivo, por si se cambia de celular o se borran los datos del navegador.{' '}
                 {ultimaCopia
                   ? `Última copia: ${deISO(ultimaCopia).toLocaleDateString('es-AR', { day: 'numeric', month: 'long' })}.`
                   : 'Todavía no hay ninguna copia.'}
@@ -1031,6 +1125,177 @@ export default function App() {
                 </section>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cuentas */}
+      {verCuentas && (
+        <div className="fixed inset-0 z-40 overflow-y-auto bg-tinta" role="dialog" aria-modal="true" aria-label="Cuentas">
+          <div className="mx-auto max-w-2xl px-4 pb-16 pt-6">
+            <div className="mb-6 flex items-center justify-between">
+              <h2 className="text-2xl font-extrabold tracking-tight">Cuentas</h2>
+              <button
+                type="button"
+                onClick={() => setVerCuentas(false)}
+                aria-label="Cerrar cuentas"
+                className="grid size-11 place-items-center rounded-xl border border-borde transition-colors hover:bg-white/5"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="mb-2 flex w-fit rounded-xl bg-panel p-1" role="tablist" aria-label="Período">
+              {PERIODOS.map((o) => (
+                <button
+                  key={o.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={periodo === o.id}
+                  onClick={() => setPeriodo(o.id)}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
+                    periodo === o.id ? 'bg-harina text-tinta' : 'text-niebla hover:text-harina'
+                  }`}
+                >
+                  {o.etiqueta}
+                </button>
+              ))}
+            </div>
+            <p className="mb-5 text-sm text-niebla first-letter:uppercase">{etiquetaRango(periodo, rango)}</p>
+
+            <div className="mb-3 rounded-2xl border border-borde bg-panel p-5">
+              <p className="text-sm text-niebla">Ganancia · cobrado menos gastos</p>
+              <p className={`mt-1 text-4xl font-extrabold tabular-nums ${ganancia < 0 ? 'text-frambuesa' : 'text-pistacho'}`}>
+                {ganancia < 0 ? '−' : ''}
+                {formatoMonto(Math.abs(ganancia))}
+              </p>
+            </div>
+            <div className="mb-8 grid grid-cols-2 gap-3">
+              {[
+                ['Vendido', vendido, ''],
+                ['Cobrado', cobradoPeriodo, 'text-mantequilla'],
+                ['Por cobrar', porCobrarPeriodo, porCobrarPeriodo > 0 ? 'text-frambuesa' : ''],
+                ['Gastos', gastado, ''],
+              ].map(([nombre, valor, color]) => (
+                <div key={nombre} className="rounded-2xl border border-borde bg-panel p-4">
+                  <p className="text-sm text-niebla">{nombre}</p>
+                  <p className={`mt-1 text-xl font-bold tabular-nums ${color}`}>{formatoMonto(valor)}</p>
+                </div>
+              ))}
+            </div>
+
+            <form
+              onSubmit={guardarGasto}
+              className={`mb-6 rounded-2xl border bg-panel p-5 transition-colors ${editandoGastoId ? 'border-mantequilla' : 'border-borde'}`}
+            >
+              <h3 className="mb-4 text-lg font-semibold">{editandoGastoId ? 'Editar gasto' : 'Anotar gasto'}</h3>
+              <div className="flex flex-col gap-4">
+                <label className="block">
+                  <span className={etiquetaCampo}>¿Qué se compró?</span>
+                  <input
+                    type="text"
+                    value={gForm.descripcion}
+                    onChange={(e) => poneGasto('descripcion', e.target.value)}
+                    placeholder="Harina, huevos, cajas…"
+                    className={campo}
+                  />
+                </label>
+                <div>
+                  <span className={etiquetaCampo}>Monto y fecha</span>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="relative block w-44">
+                      <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-niebla">AR$</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={verMonto(gForm.monto)}
+                        onChange={(e) => poneGasto('monto', limpiarMonto(e.target.value))}
+                        placeholder="0"
+                        aria-label="Monto del gasto"
+                        className={`${campo} pl-14 tabular-nums`}
+                      />
+                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {chipsGasto.map((iso) => (
+                        <button
+                          key={iso}
+                          type="button"
+                          onClick={() => { poneGasto('fecha', iso); setGCalAbierto(false); }}
+                          className={chip(gForm.fecha === iso)}
+                        >
+                          {etiquetaDia(iso)}
+                        </button>
+                      ))}
+                      <button type="button" onClick={() => setGCalAbierto((v) => !v)} className={chip(gCalAbierto)}>
+                        Otro día
+                      </button>
+                    </div>
+                  </div>
+                  {gCalAbierto && (
+                    <Calendario pasado valor={gForm.fecha} onElegir={(iso) => { poneGasto('fecha', iso); setGCalAbierto(false); }} />
+                  )}
+                </div>
+                <div className="flex justify-end gap-3">
+                  {editandoGastoId && (
+                    <button
+                      type="button"
+                      onClick={limpiarGasto}
+                      className="flex h-12 items-center gap-1.5 rounded-xl border border-borde px-4 font-semibold transition-colors hover:bg-white/5"
+                    >
+                      <X size={18} /> Cancelar
+                    </button>
+                  )}
+                  <button
+                    type="submit"
+                    className="flex h-12 items-center gap-1.5 rounded-xl bg-mantequilla px-6 font-bold text-tinta transition-colors hover:bg-[#f6cf72]"
+                  >
+                    {editandoGastoId ? <Save size={18} /> : <Plus size={18} />} {editandoGastoId ? 'Actualizar' : 'Guardar'}
+                  </button>
+                </div>
+              </div>
+            </form>
+
+            <h3 className="mb-3 text-lg font-semibold">Gastos del período</h3>
+            {gastosPeriodo.length === 0 ? (
+              <p className="rounded-2xl border border-dashed border-borde px-6 py-10 text-center text-niebla">
+                No hay gastos anotados en este período.
+              </p>
+            ) : (
+              <ul className="divide-y divide-borde rounded-2xl border border-borde bg-panel px-4">
+                {gastosPeriodo.map((g) => (
+                  <li key={g.id} className="flex items-center justify-between gap-3 py-3">
+                    <div className="min-w-0">
+                      <p className="break-words font-semibold">{g.descripcion}</p>
+                      <p className="text-sm text-niebla">{etiquetaDia(g.fecha)}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="mr-1 font-semibold tabular-nums">{formatoMonto(g.monto)}</span>
+                      <button
+                        type="button"
+                        onClick={() => empezarEdicionGasto(g)}
+                        title="Editar gasto"
+                        aria-label="Editar gasto"
+                        className="grid size-10 place-items-center rounded-xl border border-borde text-niebla transition-colors hover:bg-white/5 hover:text-harina"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => eliminarGasto(g)}
+                        title="Eliminar gasto"
+                        aria-label="Eliminar gasto"
+                        className="grid size-10 place-items-center rounded-xl border border-borde text-niebla transition-colors hover:bg-white/5 hover:text-frambuesa"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-6 text-sm text-niebla">
+              Las ventas se cuentan en la fecha de entrega de cada pedido, incluidos los del historial. La ganancia es lo cobrado menos los gastos.
+            </p>
           </div>
         </div>
       )}
