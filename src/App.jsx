@@ -258,8 +258,22 @@ export default function App() {
       const texto = event.results[0][0].transcript;
       const dato = analizarDictado(texto);
       setTranscripcion(texto);
-      setForm((f) => ({ ...f, items: texto, monto: dato.monto || f.monto, cliente: dato.cliente || 'Cliente dictado' }));
+
+      // Cada dato del dictado va a su campo. Si algo no se detecta,
+      // se conserva lo que ya estaba escrito en ese campo.
+      setForm((f) => ({
+        ...f,
+        cliente: dato.cliente || f.cliente,
+        telefono: dato.telefono || f.telefono,
+        items: dato.items || f.items,
+        monto: dato.monto || f.monto,
+        fecha: dato.fecha || f.fecha,
+        hora: dato.hora || f.hora,
+        pago: dato.pago || f.pago,
+        notas: dato.notas || f.notas,
+      }));
     };
+
     recognition.onerror = (e) => {
       setEscuchando(false);
       if (e.error === 'not-allowed') avisar('Permite el micrófono en el navegador para dictar.');
