@@ -115,6 +115,21 @@ const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', '
 const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
 const sinTildes = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
+// En JavaScript, \b no reconoce las letras con tilde (á, é, í, ó, ú, ñ) como parte de una palabra,
+// por eso "abonó" o "García" fallaban. Este límite sí las reconoce y se usa en todas las expresiones.
+const LIMITE = '(?:(?<![\\p{L}\\d])|(?![\\p{L}\\d]))';
+const rxs = (fuente, flags = 'iu') => new RegExp(fuente.replace(/\\b/g, LIMITE), flags);
+const rx = (re) => rxs(re.source, re.flags.includes('u') ? re.flags : `${re.flags}u`);
+
+// Nombres propios: "maría garcía de hungría" -> "María García de Hungría"
+const PARTICULAS = new Set(['de', 'del', 'la', 'las', 'los', 'y', 'da', 'di', 'van', 'von']);
+const nombrePropio = (s) =>
+  s
+    .trim()
+    .split(/\s+/)
+    .map((w, i) => (i > 0 && PARTICULAS.has(w.toLowerCase()) ? w.toLowerCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join(' ');
+
 const aNumero = (s) => {
   const m = s.match(/(\d[\d.,]*)\s*(mil\b)?/i);
   if (!m) return '';
@@ -136,38 +151,38 @@ const analizarDictado = (texto) => {
   };
 
   // Teléfono
-  const tel = quitar(/\b(?:n[uú]mero de (?:tel[eé]fono|celular|whatsapp)|tel[eé]fono|celular|whatsapp)\b\s*(?:es\s+)?(\+?\d[\d\s-]{6,}\d)/i);
+  const tel = quitar(rx(/\b(?:n[uú]mero de (?:tel[eé]fono|celular|whatsapp)|tel[eé]fono|celular|whatsapp)\b\s*(?:es\s+)?(\+?\d[\d\s-]{6,}\d)/i));
   if (tel) r.telefono = tel[1].replace(/[^\d+]/g, '');
 
-  // Hora: "a las 3 y media de la tarde", "a las 15:30"
-  const h = quitar(/\b(?:a\s+las?|hora)\s+(\d{1,2})(?:[:.](\d{2}))?(?:\s*(?:hs|horas))?(?:\s+(y\s+media|y\s+cuarto|menos\s+cuarto))?(?:\s+de\s+la\s+(ma[ñn]ana|tarde|noche))?/i);
+  // Hora: "a las 3 y media de la tarde", "a las 15:30", "hora 1900"
+  const h = quitar(rx(/\b(?:a\s+las?|hora)\s+(?:opcional\s+)?(\d{1,2})(?:[:.](\d{2})|(\d{2}))?(?!\d)(?:\s*(?:hs|horas))?(?:\s+(y\s+media|y\s+cuarto|menos\s+cuarto))?(?:\s+de\s+la\s+(ma[ñn]ana|tarde|noche))?/i));
   if (h) {
     let hh = Number(h[1]);
-    let mm = Number(h[2] || 0);
-    const aj = (h[3] || '').toLowerCase().replace(/\s+/g, ' ');
+    let mm = Number(h[2] || h[3] || 0);
+    const aj = (h[4] || '').toLowerCase().replace(/\s+/g, ' ');
     if (aj === 'y media') mm = 30;
     else if (aj === 'y cuarto') mm = 15;
     else if (aj === 'menos cuarto') {
       hh -= 1;
       mm = 45;
     }
-    const parte = sinTildes((h[4] || '').toLowerCase());
+    const parte = sinTildes((h[5] || '').toLowerCase());
     if ((parte === 'tarde' || parte === 'noche') && hh < 12) hh += 12;
-    else if (!parte && hh >= 1 && hh <= 7) hh += 12; // "a las 3" en una pastelería = 15:00
+    else if (!parte && !h[2] && !h[3] && hh >= 1 && hh <= 7) hh += 12; // "a las 3" en una pastelería = 15:00
     if (hh >= 0 && hh <= 23 && mm <= 59) r.hora = `${pad(hh)}:${pad(mm)}`;
   }
 
   // Fecha
-  if (quitar(/\b(?:para\s+)?pasado\s+ma[ñn]ana\b/i)) r.fecha = sumarDias(2);
-  else if (quitar(/\b(?:para\s+)?ma[ñn]ana\b/i)) r.fecha = sumarDias(1);
-  else if (quitar(/\b(?:para\s+)?hoy\b/i)) r.fecha = sumarDias(0);
+  if (quitar(rx(/\b(?:para\s+)?pasado\s+ma[ñn]ana\b/i))) r.fecha = sumarDias(2);
+  else if (quitar(rx(/\b(?:para\s+)?ma[ñn]ana\b/i))) r.fecha = sumarDias(1);
+  else if (quitar(rx(/\b(?:para\s+)?hoy\b/i))) r.fecha = sumarDias(0);
   else {
-    const dia = quitar(/\b(?:para\s+)?(?:el\s+)?(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b/i);
+    const dia = quitar(rx(/\b(?:para\s+)?(?:el\s+)?(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b/i));
     if (dia) {
       const idx = DIAS_SEMANA.indexOf(sinTildes(dia[1].toLowerCase()));
       r.fecha = sumarDias(((idx - new Date().getDay() + 7) % 7) || 7);
     } else {
-      const num = quitar(/\b(?:para\s+)?el\s+(\d{1,2})(?:\s+de\s+([a-zé]+))?/i);
+      const num = quitar(rx(/\b(?:para\s+)?el\s+(\d{1,2})(?:\s+de\s+([a-zé]+))?/i));
       if (num) {
         const hoy = new Date();
         let mes = hoy.getMonth();
@@ -183,39 +198,39 @@ const analizarDictado = (texto) => {
   }
 
   // Pago
-  if (/\b(?:sin\s+pagar|no\s+pag[oó]|debe\s+todo)\b/i.test(t)) r.pago = 'sin';
-  else if (/\b(?:ya\s+pag[oó]|pagad[oa]|pag[oó]\s+todo)\b/i.test(t)) r.pago = 'pagado';
-  t = t.replace(/\b(?:sin\s+pagar|no\s+pag[oó]|debe\s+todo|ya\s+pag[oó]|pagad[oa]|pag[oó]\s+todo)\b/gi, ' ');
+  if (rx(/\b(?:sin\s+pagar|no\s+pag[oó]|debe\s+todo)\b/i).test(t)) r.pago = 'sin';
+  else if (rx(/\b(?:ya\s+pag[oó]|pagad[oa]|pag[oó]\s+todo)\b/i).test(t)) r.pago = 'pagado';
+  t = t.replace(rx(/\b(?:sin\s+pagar|no\s+pag[oó]|debe\s+todo|ya\s+pag[oó]|pagad[oa]|pag[oó]\s+todo)\b/gi), ' ');
 
-  const abono = quitar(/\b(?:abon[oó]|abono|se[ñn]a|adelanto|dej[oó])\b\s*(?:de\s+)?\$?\s*(\d[\d.,]*(?:\s*mil\b)?)(?:\s*pesos?)?/i);
+  const abono = quitar(rx(/\b(?:abon[oó]|abono|se[ñn]a|adelanto|dej[oó])\b\s*(?:de\s+)?\$?\s*(\d[\d.,]*(?:\s*mil\b)?)(?:\s*pesos?)?/i));
   if (abono) {
     r.abono = aNumero(abono[1]);
     if (r.abono) r.pago = 'abono';
   }
 
   // Notas (hasta la siguiente palabra clave o el final)
-  const nota = quitar(/\b(?:notas?|observaci[oó]n(?:es)?|aclaraci[oó]n)\b\s*:?\s*(.+?)(?=\s+(?:cliente|pedido|tel[eé]fono|monto|total|precio|abon[oó]|se[ñn]a)\b|\s*$)/i);
+  const nota = quitar(rx(/\b(?:notas?|observaci[oó]n(?:es)?|aclaraci[oó]n)\b\s*:?\s*(.+?)(?=\s+(?:cliente|pedido|tel[eé]fono|monto|total|precio|abon[oó]|se[ñn]a)\b|\s*$)/i));
   if (nota) r.notas = nota[1].trim();
 
   // Monto
   const monto =
-    quitar(/\b(?:monto|total|precio|cuesta|sale)\b\s*(?:de\s+|es\s+)?\$?\s*(\d[\d.,]*(?:\s*mil\b)?)(?:\s*pesos?)?/i) ||
-    quitar(/\$\s*(\d[\d.,]*(?:\s*mil\b)?)/) ||
-    quitar(/(\d[\d.,]*(?:\s*mil\b)?)\s*(?:pesos?|\$)/i);
+    quitar(rx(/\b(?:monto|total|precio|cuesta|sale)\b\s*(?:de\s+|es\s+)?\$?\s*(\d[\d.,]*(?:\s*mil\b)?)(?:\s*pesos?)?/i)) ||
+    quitar(rx(/\$\s*(\d[\d.,]*(?:\s*mil\b)?)/)) ||
+    quitar(rx(/(\d[\d.,]*(?:\s*mil\b)?)\s*(?:pesos?|\$)/i));
   if (monto) r.monto = aNumero(monto[1]);
 
   // Cliente: "cliente Ana", "nombre Ana" o "para Ana"
   const stop = '(?=\\s+(?:pedido|tel[eé]fono|n[uú]mero|celular|whatsapp|monto|total|precio|abon[oó]|se[ñn]a|notas?|con|y|por|que)\\b|[,.\\d]|\\s*$)';
   const cl =
-    quitar(new RegExp(`\\b(?:cliente|nombre)\\s+(?:es\\s+)?([^\\d,.]+?)${stop}`, 'i')) ||
-    quitar(new RegExp(`\\bpara\\s+([^\\d,.]+?)${stop}`, 'i'));
-  if (cl) r.cliente = cl[1].trim().replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+    quitar(rxs(`\\b(?:cliente|nombre)\\s+(?:es\\s+)?([^\\d,.]+?)${stop}`)) ||
+    quitar(rxs(`\\bpara\\s+([^\\d,.]+?)${stop}`));
+  if (cl) r.cliente = nombrePropio(cl[1]);
 
   // Pedido
-  const it = quitar(/\b(?:pedido|pidi[oó]|encargo|encarg[oó]|lleva)\b\s*(?:es\s+|son\s+)?(.+?)(?=\s+(?:cliente|tel[eé]fono|monto|total|precio|abon[oó]|se[ñn]a|notas?)\b|\s*$)/i);
+  const it = quitar(rx(/\b(?:pedido|pidi[oó]|encargo|encarg[oó]|lleva)\b\s*(?:es\s+|son\s+)?(.+?)(?=\s+(?:cliente|tel[eé]fono|monto|total|precio|abon[oó]|se[ñn]a|notas?)\b|\s*$)/i));
   let items = it
     ? it[1]
-    : t.replace(/\b(?:cliente|nombre|pedido|tel[eé]fono|entrega|total|monto)\b/gi, ' ');
+    : t.replace(rx(/\b(?:cliente|nombre|pedido|tel[eé]fono|entrega|total|monto)\b/gi), ' ');
   items = items.replace(/\s+/g, ' ').replace(/^[\s,.]+|[\s,.]+$/g, '');
   if (items) r.items = items.replace(/\s+y\s+/gi, ', '); // lineas() separa por comas
   return r;
