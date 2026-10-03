@@ -486,7 +486,7 @@ export default function App() {
                 inputMode="tel"
                 value={form.telefono}
                 onChange={(e) => poner('telefono', e.target.value.replace(/[^\d+\s-]/g, ''))}
-                placeholder="11 5555 1234"
+                placeholder="809 555 0123"
                 className={campo}
               />
             </label>
