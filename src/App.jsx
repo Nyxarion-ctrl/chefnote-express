@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   Mic, Check, Plus, Pencil, Trash2, X, Save, Undo2, Archive, ChefHat, CalendarClock,
-  MessageCircle, History, ChevronLeft, ChevronRight, StickyNote,
+  MessageCircle, History, ChevronLeft, ChevronRight, StickyNote, Download, Upload,
 } from 'lucide-react';
 
 // Nombre del negocio para firmar los mensajes de WhatsApp (déjalo vacío para no incluirlo)
@@ -47,25 +47,15 @@ const etiquetaDia = (iso) => {
   if (iso === sumarDias(1)) return 'Mañana';
   return deISO(iso).toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '');
 };
-const aHora24 = (txt, ampm) => {
+const aHora24 = (txt) => {
   const m = txt.trim().match(/^(\d{1,2})(?::?(\d{2}))?$/);
   if (!m) return '';
-  let h = Number(m[1]);
+  const h = Number(m[1]);
   const min = Number(m[2] || 0);
-  if (h < 1 || h > 12 || min > 59) return '';
-  if (ampm === 'AM' && h === 12) h = 0;
-  else if (ampm === 'PM' && h < 12) h += 12;
+  if (h > 23 || min > 59) return '';
   return `${pad(h)}:${pad(min)}`;
 };
-const deHora24 = (h24) => {
-  if (!h24) return { txt: '', ampm: 'PM' };
-  const [h, m] = h24.split(':').map(Number);
-  return { txt: `${h % 12 || 12}:${pad(m)}`, ampm: h >= 12 ? 'PM' : 'AM' };
-};
-const formatoHora = (h24) => {
-  const { txt, ampm } = deHora24(h24);
-  return `${txt} ${ampm}`;
-};
+const formatoHora = (h24) => `${h24} hs`;
 
 const cobradoDe = (p) => (p.pago === 'pagado' ? p.total : p.pago === 'abono' ? p.abono || 0 : 0);
 const debeDe = (p) => Math.max(p.total - cobradoDe(p), 0);
@@ -131,7 +121,7 @@ const analizarDictado = (texto) => {
 
 const vacio = () => ({
   cliente: '', telefono: '', items: '', monto: '', fecha: sumarDias(0),
-  hora: '', ampm: 'PM', pago: 'sin', abono: '', notas: '',
+  hora: '', pago: 'sin', abono: '', notas: '',
 });
 
 const FILTROS = [
@@ -213,9 +203,17 @@ export default function App() {
   const [aviso, setAviso] = useState(null);
   const [confirmacion, setConfirmacion] = useState(null);
   const [verHistorial, setVerHistorial] = useState(false);
+  const [ultimaCopia, setUltimaCopia] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('chefnote_ultima_copia')) || '';
+    } catch {
+      return '';
+    }
+  });
   const reconocimientoRef = useRef(null);
   const formularioRef = useRef(null);
   const avisoTimer = useRef(null);
+  const archivoRef = useRef(null);
 
   const poner = (clave, valor) => setForm((f) => ({ ...f, [clave]: valor }));
 
@@ -292,9 +290,9 @@ export default function App() {
     const total = Number(form.monto) || 0;
     let hora = '';
     if (form.hora.trim()) {
-      hora = aHora24(form.hora, form.ampm);
+      hora = aHora24(form.hora);
       if (!hora) {
-        avisar('Revisa la hora de entrega, por ejemplo 3:30');
+        avisar('Revisa la hora de entrega, por ejemplo 15:30');
         return;
       }
     }
@@ -330,11 +328,10 @@ export default function App() {
   };
 
   const empezarEdicion = (p) => {
-    const { txt, ampm } = deHora24(p.hora);
     setEditandoId(p.id);
     setForm({
       cliente: p.cliente, telefono: p.telefono || '', items: p.items, monto: String(p.total),
-      fecha: p.fecha || sumarDias(0), hora: txt, ampm, pago: p.pago || 'sin',
+      fecha: p.fecha || sumarDias(0), hora: p.hora || '', pago: p.pago || 'sin',
       abono: p.abono ? String(p.abono) : '', notas: p.notas || '',
     });
     setTranscripcion('');
@@ -408,6 +405,52 @@ export default function App() {
         avisar('Historial vaciado');
       },
     });
+
+  const descargarCopia = () => {
+    const hoy = sumarDias(0);
+    const datos = { app: 'chefnote-express', version: 1, fecha: new Date().toISOString(), pedidos, historial };
+    const blob = new Blob([JSON.stringify(datos, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const enlace = document.createElement('a');
+    enlace.href = url;
+    enlace.download = `chefnote-copia-${hoy}.json`;
+    document.body.appendChild(enlace);
+    enlace.click();
+    enlace.remove();
+    URL.revokeObjectURL(url);
+    guardar('chefnote_ultima_copia', hoy);
+    setUltimaCopia(hoy);
+    avisar('Copia descargada');
+  };
+
+  const elegirCopia = (e) => {
+    const archivo = e.target.files?.[0];
+    e.target.value = '';
+    if (!archivo) return;
+    const lector = new FileReader();
+    lector.onload = () => {
+      try {
+        const datos = JSON.parse(lector.result);
+        if (!Array.isArray(datos.pedidos) || !Array.isArray(datos.historial)) throw new Error('formato');
+        const limpiar = (lista) => lista.map((p) => (horaValida(p.hora) ? p : { ...p, hora: '' }));
+        setConfirmacion({
+          titulo: 'Restaurar copia',
+          etiqueta: 'Restaurar',
+          texto: `Se reemplazarán los datos actuales por los de la copia: ${datos.pedidos.length} pedido${datos.pedidos.length === 1 ? '' : 's'} y ${datos.historial.length} en el historial.`,
+          accion: () => {
+            setPedidos(limpiar(datos.pedidos));
+            setHistorial(limpiar(datos.historial));
+            limpiarFormulario();
+            setConfirmacion(null);
+            avisar('Copia restaurada');
+          },
+        });
+      } catch {
+        avisar('Ese archivo no es una copia válida de ChefNote');
+      }
+    };
+    lector.readAsText(archivo);
+  };
 
   const cobrado = pedidos.reduce((a, p) => a + cobradoDe(p), 0);
   const porCobrar = pedidos.reduce((a, p) => a + debeDe(p), 0);
@@ -534,23 +577,11 @@ export default function App() {
                 inputMode="numeric"
                 value={form.hora}
                 onChange={(e) => poner('hora', e.target.value.replace(/[^\d:]/g, '').slice(0, 5))}
-                placeholder="3:30"
+                placeholder="15:30"
                 aria-label="Hora de entrega"
                 className={`${campo.replace('w-full', 'w-28 shrink-0')} tabular-nums`}
               />
-              <div className="flex rounded-xl bg-tinta/60 p-1">
-                {['AM', 'PM'].map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => poner('ampm', m)}
-                    className={`rounded-lg px-3.5 py-2 text-sm font-semibold transition-colors ${form.ampm === m ? 'bg-harina text-tinta' : 'text-niebla hover:text-harina'}`}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
-              <span className="whitespace-nowrap text-sm text-niebla">Hora opcional</span>
+              <span className="whitespace-nowrap text-sm text-niebla">Hora opcional (24 h)</span>
             </div>
           </div>
 
@@ -806,6 +837,32 @@ export default function App() {
                 >
                   <X size={20} />
                 </button>
+              </div>
+            </div>
+            <div className="mb-6 rounded-2xl border border-borde bg-panel p-4">
+              <h3 className="font-bold">Copia de seguridad</h3>
+              <p className="mt-1 text-sm text-niebla">
+                Guarda los pedidos y el historial en un archivo, por si se cambia de celular o se borran los datos del navegador.{' '}
+                {ultimaCopia
+                  ? `Última copia: ${deISO(ultimaCopia).toLocaleDateString('es-AR', { day: 'numeric', month: 'long' })}.`
+                  : 'Todavía no hay ninguna copia.'}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={descargarCopia}
+                  className="flex items-center gap-1.5 rounded-xl bg-mantequilla px-4 py-2.5 text-sm font-bold text-tinta transition-colors hover:bg-[#f6cf72]"
+                >
+                  <Download size={16} /> Descargar copia
+                </button>
+                <button
+                  type="button"
+                  onClick={() => archivoRef.current?.click()}
+                  className="flex items-center gap-1.5 rounded-xl border border-borde px-4 py-2.5 text-sm font-semibold transition-colors hover:bg-white/5"
+                >
+                  <Upload size={16} /> Restaurar copia
+                </button>
+                <input ref={archivoRef} type="file" accept="application/json,.json" onChange={elegirCopia} className="hidden" />
               </div>
             </div>
             {grupos.length === 0 && (
