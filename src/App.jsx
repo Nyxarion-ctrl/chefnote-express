@@ -110,13 +110,115 @@ const enlaceWhatsApp = (p) => {
   return `https://wa.me/${numero}?text=${encodeURIComponent(partes.join('\n\n'))}`;
 };
 
-// Extrae monto y cliente del texto dictado
+/* ---------- Análisis del dictado ---------- */
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+const sinTildes = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+const aNumero = (s) => {
+  const m = s.match(/(\d[\d.,]*)\s*(mil\b)?/i);
+  if (!m) return '';
+  let n = Number(m[1].replace(/\./g, '').replace(',', '.'));
+  if (!Number.isFinite(n)) return '';
+  if (m[2]) n *= 1000;
+  return String(Math.round(n));
+};
+
+// Ejemplo: "cliente Ana teléfono 11 5555 1234 pedido dos brownies y un pie de limón
+// para mañana a las 3 y media de la tarde monto 850 pesos abonó 300 notas sin nueces"
 const analizarDictado = (texto) => {
-  const matchMonto = texto.match(/(\d[\d.,]*)\s*(?:pesos|peso|\$)/i) || texto.match(/\$\s*(\d[\d.,]*)/);
-  const n = matchMonto ? Number(matchMonto[1].replace(/\./g, '').replace(',', '.')) : NaN;
-  const monto = Number.isFinite(n) ? String(Math.round(n)) : '';
-  const matchCliente = texto.match(/\bpara\s+([^,.\d]+?)(?=\s+(?:con|de|y|por)\b|[,.\d]|$)/i);
-  return { monto, cliente: matchCliente ? matchCliente[1].trim() : '' };
+  const r = {};
+  let t = ` ${texto.trim()} `;
+  const quitar = (re) => {
+    const m = t.match(re);
+    if (m) t = t.replace(re, ' ');
+    return m;
+  };
+
+  // Teléfono
+  const tel = quitar(/\b(?:n[uú]mero de (?:tel[eé]fono|celular|whatsapp)|tel[eé]fono|celular|whatsapp)\b\s*(?:es\s+)?(\+?\d[\d\s-]{6,}\d)/i);
+  if (tel) r.telefono = tel[1].replace(/[^\d+]/g, '');
+
+  // Hora: "a las 3 y media de la tarde", "a las 15:30"
+  const h = quitar(/\b(?:a\s+las?|hora)\s+(\d{1,2})(?:[:.](\d{2}))?(?:\s*(?:hs|horas))?(?:\s+(y\s+media|y\s+cuarto|menos\s+cuarto))?(?:\s+de\s+la\s+(ma[ñn]ana|tarde|noche))?/i);
+  if (h) {
+    let hh = Number(h[1]);
+    let mm = Number(h[2] || 0);
+    const aj = (h[3] || '').toLowerCase().replace(/\s+/g, ' ');
+    if (aj === 'y media') mm = 30;
+    else if (aj === 'y cuarto') mm = 15;
+    else if (aj === 'menos cuarto') {
+      hh -= 1;
+      mm = 45;
+    }
+    const parte = sinTildes((h[4] || '').toLowerCase());
+    if ((parte === 'tarde' || parte === 'noche') && hh < 12) hh += 12;
+    else if (!parte && hh >= 1 && hh <= 7) hh += 12; // "a las 3" en una pastelería = 15:00
+    if (hh >= 0 && hh <= 23 && mm <= 59) r.hora = `${pad(hh)}:${pad(mm)}`;
+  }
+
+  // Fecha
+  if (quitar(/\b(?:para\s+)?pasado\s+ma[ñn]ana\b/i)) r.fecha = sumarDias(2);
+  else if (quitar(/\b(?:para\s+)?ma[ñn]ana\b/i)) r.fecha = sumarDias(1);
+  else if (quitar(/\b(?:para\s+)?hoy\b/i)) r.fecha = sumarDias(0);
+  else {
+    const dia = quitar(/\b(?:para\s+)?(?:el\s+)?(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b/i);
+    if (dia) {
+      const idx = DIAS_SEMANA.indexOf(sinTildes(dia[1].toLowerCase()));
+      r.fecha = sumarDias(((idx - new Date().getDay() + 7) % 7) || 7);
+    } else {
+      const num = quitar(/\b(?:para\s+)?el\s+(\d{1,2})(?:\s+de\s+([a-zé]+))?/i);
+      if (num) {
+        const hoy = new Date();
+        let mes = hoy.getMonth();
+        if (num[2]) {
+          const i = MESES.indexOf(sinTildes(num[2].toLowerCase()));
+          if (i >= 0) mes = i;
+        }
+        let d = new Date(hoy.getFullYear(), mes, Number(num[1]));
+        if (aISO(d) < sumarDias(0)) d = new Date(hoy.getFullYear(), mes + (num[2] ? 12 : 1), Number(num[1]));
+        r.fecha = aISO(d);
+      }
+    }
+  }
+
+  // Pago
+  if (/\b(?:sin\s+pagar|no\s+pag[oó]|debe\s+todo)\b/i.test(t)) r.pago = 'sin';
+  else if (/\b(?:ya\s+pag[oó]|pagad[oa]|pag[oó]\s+todo)\b/i.test(t)) r.pago = 'pagado';
+  t = t.replace(/\b(?:sin\s+pagar|no\s+pag[oó]|debe\s+todo|ya\s+pag[oó]|pagad[oa]|pag[oó]\s+todo)\b/gi, ' ');
+
+  const abono = quitar(/\b(?:abon[oó]|abono|se[ñn]a|adelanto|dej[oó])\b\s*(?:de\s+)?\$?\s*(\d[\d.,]*(?:\s*mil\b)?)(?:\s*pesos?)?/i);
+  if (abono) {
+    r.abono = aNumero(abono[1]);
+    if (r.abono) r.pago = 'abono';
+  }
+
+  // Notas (hasta la siguiente palabra clave o el final)
+  const nota = quitar(/\b(?:notas?|observaci[oó]n(?:es)?|aclaraci[oó]n)\b\s*:?\s*(.+?)(?=\s+(?:cliente|pedido|tel[eé]fono|monto|total|precio|abon[oó]|se[ñn]a)\b|\s*$)/i);
+  if (nota) r.notas = nota[1].trim();
+
+  // Monto
+  const monto =
+    quitar(/\b(?:monto|total|precio|cuesta|sale)\b\s*(?:de\s+|es\s+)?\$?\s*(\d[\d.,]*(?:\s*mil\b)?)(?:\s*pesos?)?/i) ||
+    quitar(/\$\s*(\d[\d.,]*(?:\s*mil\b)?)/) ||
+    quitar(/(\d[\d.,]*(?:\s*mil\b)?)\s*(?:pesos?|\$)/i);
+  if (monto) r.monto = aNumero(monto[1]);
+
+  // Cliente: "cliente Ana", "nombre Ana" o "para Ana"
+  const stop = '(?=\\s+(?:pedido|tel[eé]fono|n[uú]mero|celular|whatsapp|monto|total|precio|abon[oó]|se[ñn]a|notas?|con|y|por|que)\\b|[,.\\d]|\\s*$)';
+  const cl =
+    quitar(new RegExp(`\\b(?:cliente|nombre)\\s+(?:es\\s+)?([^\\d,.]+?)${stop}`, 'i')) ||
+    quitar(new RegExp(`\\bpara\\s+([^\\d,.]+?)${stop}`, 'i'));
+  if (cl) r.cliente = cl[1].trim().replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+
+  // Pedido
+  const it = quitar(/\b(?:pedido|pidi[oó]|encargo|encarg[oó]|lleva)\b\s*(?:es\s+|son\s+)?(.+?)(?=\s+(?:cliente|tel[eé]fono|monto|total|precio|abon[oó]|se[ñn]a|notas?)\b|\s*$)/i);
+  let items = it
+    ? it[1]
+    : t.replace(/\b(?:cliente|nombre|pedido|tel[eé]fono|entrega|total|monto)\b/gi, ' ');
+  items = items.replace(/\s+/g, ' ').replace(/^[\s,.]+|[\s,.]+$/g, '');
+  if (items) r.items = items.replace(/\s+y\s+/gi, ', '); // lineas() separa por comas
+  return r;
 };
 
 const vacio = () => ({
@@ -270,6 +372,7 @@ export default function App() {
         fecha: dato.fecha || f.fecha,
         hora: dato.hora || f.hora,
         pago: dato.pago || f.pago,
+        abono: dato.abono || f.abono,
         notas: dato.notas || f.notas,
       }));
     };
@@ -529,7 +632,7 @@ export default function App() {
           <Mic size={36} strokeWidth={2.2} className="relative" />
         </button>
         <p className="mt-4 max-w-sm text-sm text-niebla">
-          {escuchando ? 'Escuchando… toca para terminar' : 'Toca y di: “dos brownies para Ana, 850 pesos”'}
+          {escuchando ? 'Escuchando… toca para terminar' : 'Toca y di: “cliente Ana, pedido dos brownies, monto 850 pesos”'}
         </p>
         {transcripcion && <p className="mt-2 max-w-md text-base italic text-harina">“{transcripcion}”</p>}
       </section>
